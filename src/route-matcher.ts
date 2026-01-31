@@ -14,7 +14,7 @@ interface CompiledRoute {
 const compiledRoutesCache = new WeakMap<object, CompiledRoute[]>();
 
 function getCompiledRoutes(
-  routes: Record<string, RouteConfig>,
+  routes: Readonly<Record<string, RouteConfig>>,
 ): CompiledRoute[] {
   const cached = compiledRoutesCache.get(routes);
   if (cached) return cached;
@@ -38,7 +38,7 @@ function getCompiledRoutes(
  */
 export function matchRoute(
   pathname: string,
-  routes: Record<string, RouteConfig>,
+  routes: Readonly<Record<string, RouteConfig>>,
 ): RouteMatch | null {
   for (const { pattern, config, regex } of getCompiledRoutes(routes)) {
     if (pattern === pathname) {

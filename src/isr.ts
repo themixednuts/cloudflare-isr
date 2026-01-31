@@ -3,10 +3,12 @@ import type {
   CacheStatus,
   ISROptions,
   ISRInstance,
+  ISRStorage,
   Logger,
   RenderResult,
 } from "./types.ts";
 import { isBypass } from "./bypass.ts";
+import { ISR_RENDER_HEADER } from "./render.ts";
 import { matchRoute } from "./route-matcher.ts";
 import { createRevalidator, revalidate } from "./revalidation/revalidator.ts";
 import { logError, logWarn } from "./logger.ts";
@@ -17,8 +19,22 @@ import {
   resolveRevalidate,
   safeCacheGet,
   sanitizeHeaders,
+  toRenderResult,
   updateTagIndexSafely,
 } from "./utils.ts";
+import { createWorkersStorage } from "./storage/workers.ts";
+
+function resolveStorage(options: ISROptions): ISRStorage {
+  if ("kv" in options && options.kv) {
+    return createWorkersStorage({
+      kv: options.kv,
+      tagIndexBinding: options.tagIndex,
+      cacheName: options.cacheName,
+      logger: options.logger,
+    });
+  }
+  return (options as { storage: ISRStorage }).storage;
+}
 
 /**
  * Build an HTTP Response from a CacheEntry and a cache status label.
@@ -28,7 +44,7 @@ function buildCachedResponse(
   status: CacheStatus,
   logger?: Logger,
 ): Response {
-  const headers = new Headers(sanitizeHeaders(entry.metadata.headers, logger));
+  const headers = new Headers(sanitizeHeaders(entry.headers, logger));
   headers.set("X-ISR-Status", status);
   headers.set("X-ISR-Cache-Date", new Date(entry.metadata.createdAt).toUTCString());
 
@@ -43,14 +59,15 @@ function buildCachedResponse(
  */
 export function createISR(options: ISROptions): ISRInstance {
   const logger = options.logger;
-  const cache = options.storage.cache;
-  const tagIndex = options.storage.tagIndex;
+  const storage = resolveStorage(options);
+  const cache = storage.cache;
+  const tagIndex = storage.tagIndex;
   const cacheKey = options.cacheKey ?? ((url: URL) => url.pathname);
   const defaultRevalidate = resolveRevalidate({
     defaultValue: options.defaultRevalidate,
   });
   const revalidator = createRevalidator({
-    storage: options.storage,
+    storage,
     cacheKey,
     logger,
   });
@@ -71,15 +88,31 @@ export function createISR(options: ISROptions): ISRInstance {
     });
   }
 
+  function ensureRender(): NonNullable<ISROptions["render"]> {
+    if (!options.render) {
+      throw new Error(
+        "[ISR] No render function provided. Pass `render` to createISR() " +
+        "when using handleRequest.",
+      );
+    }
+    return options.render;
+  }
+
   return {
     async handleRequest(
       request: Request,
       ctx: ExecutionContext,
-    ): Promise<Response> {
-      // Only GET and HEAD are cacheable.
+    ): Promise<Response | null> {
+      // Only GET and HEAD are cacheable — return null for everything else
+      // so the framework can handle the request normally.
       if (request.method !== "GET" && request.method !== "HEAD") {
-        const result = await options.render(request);
-        return buildRenderResponse(result, "SKIP", true);
+        return null;
+      }
+
+      // Recursion guard: selfFetch() render requests carry this header.
+      // Return null so the framework renders the page normally.
+      if (request.headers.get(ISR_RENDER_HEADER) === "1") {
+        return null;
       }
 
       const url = new URL(request.url);
@@ -90,15 +123,17 @@ export function createISR(options: ISROptions): ISRInstance {
       const routeConfig = routeMatch?.config;
       const allowCache = options.routes ? routeMatch !== null : true;
 
-      // Bypass mode — render fresh, skip cache entirely.
-      if (isBypass(request, options.bypassToken)) {
-        const result = await options.render(request);
-        return buildRenderResponse(result, "BYPASS", true);
+      // Non-matching route — return null so the framework handles it.
+      if (!allowCache) {
+        return null;
       }
 
-      if (!allowCache) {
-        const result = await options.render(request);
-        return buildRenderResponse(result, "SKIP", true);
+      const render = ensureRender();
+
+      // Bypass mode — render fresh, skip cache entirely.
+      if (isBypass(request, options.bypassToken)) {
+        const result = await toRenderResult(await render(request));
+        return buildRenderResponse(result, "BYPASS", true);
       }
 
       const routeRevalidate = resolveRevalidate({
@@ -107,7 +142,7 @@ export function createISR(options: ISROptions): ISRInstance {
       });
 
       if (isNoStore(routeRevalidate)) {
-        const result = await options.render(request);
+        const result = await toRenderResult(await render(request));
         ctx.waitUntil(
           cache.delete(key).catch((error) => {
             logWarn(logger, "Failed to delete cache entry:", error);
@@ -132,10 +167,10 @@ export function createISR(options: ISROptions): ISRInstance {
           revalidate({
             key,
             request,
-            lock: options.storage.lock,
+            lock: storage.lock,
             tagIndex,
             cache,
-            render: options.render,
+            render,
             defaultRevalidate,
             routeConfig,
             logger,
@@ -147,7 +182,7 @@ export function createISR(options: ISROptions): ISRInstance {
       }
 
       // MISS — render synchronously (blocking).
-      const result = await options.render(request);
+      const result = await toRenderResult(await render(request));
 
       const revalidateSeconds = resolveRevalidate({
         render: result.revalidate,

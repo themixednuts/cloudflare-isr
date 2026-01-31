@@ -8,6 +8,7 @@ import { DurableObject } from "cloudflare:workers";
  * - `POST /add`    — body: `{ tag, key }` — insert a tag/key pair
  * - `GET  /get?tag=<tag>` — return JSON array of keys for the tag
  * - `POST /remove` — body: `{ tag, key }` — delete a tag/key pair
+ * - `POST /remove-tag` — body: `{ tag }` — delete all keys for a tag
  *
  * The SQLite table is created automatically via a Wrangler migration
  * (see `wrangler.jsonc`), but the DO also ensures it exists at
@@ -45,6 +46,21 @@ export class ISRTagIndexDO extends DurableObject {
         return new Response("ok");
       }
 
+      case "/add-bulk": {
+        const { tags, key } = await request.json<{
+          tags: string[];
+          key: string;
+        }>();
+        for (const tag of tags) {
+          this.sql.exec(
+            "INSERT OR IGNORE INTO tag_keys (tag, key) VALUES (?, ?)",
+            tag,
+            key,
+          );
+        }
+        return new Response("ok");
+      }
+
       case "/get": {
         const tag = url.searchParams.get("tag") ?? "";
         const rows = this.sql
@@ -64,6 +80,12 @@ export class ISRTagIndexDO extends DurableObject {
           tag,
           key,
         );
+        return new Response("ok");
+      }
+
+      case "/remove-tag": {
+        const { tag } = await request.json<{ tag: string }>();
+        this.sql.exec("DELETE FROM tag_keys WHERE tag = ?", tag);
         return new Response("ok");
       }
 

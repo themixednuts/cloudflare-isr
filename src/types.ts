@@ -24,9 +24,9 @@ export interface ResponseShape {
   /** HTTP status code for the response. */
   status: number;
   /** HTTP response headers to include. */
-  headers?: Record<string, string>;
+  headers?: Readonly<Record<string, string>>;
   /** Optional tags for tag-based cache invalidation. */
-  tags?: string[];
+  tags?: readonly string[];
 }
 
 /** Result of rendering a page. */
@@ -36,7 +36,7 @@ export type RenderResult = ResponseShape & {
 };
 
 /** Async function that renders a page for a given request. */
-export type RenderFunction = (request: Request) => Promise<RenderResult>;
+export type RenderFunction = (request: Request) => Promise<RenderResult | Response>;
 
 // ---------------------------------------------------------------------------
 // Route configuration
@@ -47,7 +47,7 @@ export interface RouteConfig {
   /** Time-to-live in seconds before the cached entry is considered stale. */
   revalidate?: RevalidateValue;
   /** Tags associated with this route for tag-based invalidation. */
-  tags?: string[];
+  tags?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -81,23 +81,32 @@ export interface Logger {
   error?: (...args: unknown[]) => void;
 }
 
-/** Options accepted by `createISR()`. */
-export interface ISROptions {
-  /** Storage implementation (cache + tag index). */
-  storage: ISRStorage;
+/** Common options shared by both shorthand and advanced ISR configurations. */
+interface ISROptionsBase {
   /** Optional logger hook for warnings and errors. */
   logger?: Logger;
   /** Default TTL in seconds applied when no per-route override is set. */
   defaultRevalidate?: RevalidateValue;
   /** Secret token that enables draft / bypass mode when provided in a request. */
   bypassToken?: string;
-  /** Function responsible for rendering a page on cache miss or revalidation. */
-  render: RenderFunction;
+  /**
+   * Function responsible for rendering a page on cache miss or revalidation.
+   *
+   * Can return a `RenderResult` object or a raw `Response` (which will be
+   * consumed automatically). Use `renderer()` for the common middleware
+   * pattern.
+   *
+   * Optional when only using `revalidatePath` / `revalidateTag` (e.g. in a
+   * dedicated revalidation API endpoint). If omitted, `handleRequest` will
+   * throw when it encounters a cache miss.
+   */
+  render?: RenderFunction;
   /** Optional cache key function. Defaults to `url.pathname`. */
   cacheKey?: CacheKeyFunction;
   /**
    * Route-specific ISR configuration keyed by path patterns.
-   * When provided, only matching routes are cached.
+   * When provided, only matching routes are cached — non-matching
+   * requests return `null` from `handleRequest`.
    *
    * Supported pattern syntax:
    * - Exact:        `/about`
@@ -113,25 +122,84 @@ export interface ISROptions {
    * }
    * ```
    */
-  routes?: Record<string, RouteConfig>;
+  routes?: Readonly<Record<string, RouteConfig>>;
 }
+
+/**
+ * Shorthand: provide Cloudflare bindings directly. The library creates
+ * the two-tier cache (Cache API + KV) and tag index client automatically.
+ *
+ * @example
+ * ```ts
+ * const isr = createISR({
+ *   kv: env.ISR_CACHE,
+ *   tagIndex: env.TAG_INDEX,
+ *   render: renderer(),
+ *   routes: { "/blog/*": { revalidate: 60, tags: ["blog"] } },
+ * });
+ * ```
+ */
+interface ISROptionsWithBindings extends ISROptionsBase {
+  /** KV namespace used for cache storage. */
+  kv: KVNamespace;
+  /** Durable Object namespace for the tag index. */
+  tagIndex: DurableObjectNamespace;
+  /** Cache API namespace (default: "isr"). */
+  cacheName?: string;
+  /** Not allowed when using bindings directly. */
+  storage?: never;
+}
+
+/**
+ * Advanced: provide a custom `ISRStorage` implementation.
+ *
+ * @example
+ * ```ts
+ * const isr = createISR({
+ *   storage: myCustomStorage,
+ *   render: myRenderFn,
+ * });
+ * ```
+ */
+interface ISROptionsWithStorage extends ISROptionsBase {
+  /** Full storage implementation (cache layer + tag index + optional lock). */
+  storage: ISRStorage;
+  /** Not allowed when using custom storage. */
+  kv?: never;
+  /** Not allowed when using custom storage. */
+  tagIndex?: never;
+  /** Not allowed when using custom storage. */
+  cacheName?: never;
+}
+
+/** Options accepted by `createISR()`. */
+export type ISROptions = ISROptionsWithBindings | ISROptionsWithStorage;
 
 // ---------------------------------------------------------------------------
 // Cache entries
 // ---------------------------------------------------------------------------
 
-/** Metadata stored alongside a cached page in KV. */
-export type CacheEntryMetadata = {
+/**
+ * Small metadata stored in KV metadata field (must stay under 1024 bytes).
+ * Response headers are stored in the KV value to avoid exceeding the limit.
+ */
+export interface CacheEntryMetadata {
   /** Timestamp (ms since epoch) when the entry was created. */
   createdAt: number;
   /** Timestamp (ms since epoch) after which the entry is considered stale. */
   revalidateAfter: number | null;
-} & Required<Omit<ResponseShape, "body">>;
+  /** HTTP status code. */
+  status: number;
+  /** Cache tags for tag-based invalidation. */
+  tags: readonly string[];
+}
 
 /** A full cache entry consisting of the response body and its metadata. */
 export interface CacheEntry {
   /** The cached response body. */
   body: string;
+  /** Response headers to include when serving from cache. */
+  headers: Record<string, string>;
   /** Metadata describing the cache entry. */
   metadata: CacheEntryMetadata;
 }
@@ -146,13 +214,11 @@ export type CacheLayerStatus = "HIT" | "STALE" | "MISS";
 /** Describes the cache status of an ISR response. */
 export type CacheStatus = CacheLayerStatus | "BYPASS" | "SKIP";
 
-/** Result returned from a cache layer lookup. */
-export interface CacheLayerResult {
-  /** The cache entry, or `null` when the lookup is a miss. */
-  entry: CacheEntry | null;
-  /** Indicates how the cache responded to the lookup. */
-  status: CacheLayerStatus;
-}
+/** Result returned from a cache layer lookup (discriminated on `status`). */
+export type CacheLayerResult =
+  | { /** The cached entry. */ entry: CacheEntry; /** Cache hit — entry is fresh. */ status: "HIT" }
+  | { /** The cached entry. */ entry: CacheEntry; /** Cache stale — entry exists but TTL has passed. */ status: "STALE" }
+  | { /** No entry found. */ entry: null; /** Cache miss — no entry for this key. */ status: "MISS" };
 
 /** Abstract cache layer interface implemented by L1 (Cache API) and L2 (KV). */
 export interface CacheLayer {
@@ -168,14 +234,16 @@ export interface CacheLayer {
 /** The public API surface returned by `createISR()`. */
 export interface ISRInstance {
   /**
-   * Main request handler. Serves cached content when available, triggers
-   * background revalidation for stale entries, and renders on cache miss.
+   * Main request handler. Returns a cached or freshly-rendered response for
+   * GET/HEAD requests that match configured routes. Returns `null` for
+   * requests that ISR does not handle (non-GET methods, non-matching routes),
+   * allowing the framework to handle them normally.
    *
    * @param request - The incoming HTTP request.
    * @param ctx     - The Cloudflare Workers execution context (for `waitUntil`).
-   * @returns A fully formed HTTP response.
+   * @returns A fully formed HTTP response, or `null` if ISR doesn't handle this request.
    */
-  handleRequest(request: Request, ctx: ExecutionContext): Promise<Response>;
+  handleRequest(request: Request, ctx: ExecutionContext): Promise<Response | null>;
 
   /**
    * Programmatically revalidate (purge) a specific path.

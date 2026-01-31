@@ -8,11 +8,26 @@ import { pageKey, type StorageKey } from "../keys.ts";
 import { determineCacheStatus } from "../utils.ts";
 
 /**
+ * Shape stored as the KV text value. Body and headers live here so that
+ * the KV metadata field (limited to 1024 bytes) only carries small fields.
+ */
+interface KvValue {
+  /** The cached response body. */
+  body: string;
+  /** Response headers serialized alongside the body. */
+  headers: Record<string, string>;
+}
+
+/**
  * Creates an L2 cache layer backed by Cloudflare KV.
  *
  * KV is globally consistent (eventually) and persists data across colos.
  * Stale entries are intentionally kept (no expirationTtl) so they can be
  * served while background revalidation occurs.
+ *
+ * Body and response headers are stored in the KV **value** (as JSON).
+ * Only small metadata (createdAt, revalidateAfter, status, tags) is stored
+ * in the KV **metadata** field to stay within the 1024-byte limit.
  */
 export function createL2Kv<KVKey extends string = StorageKey>(
   kv: KVNamespace<KVKey>,
@@ -27,11 +42,26 @@ export function createL2Kv<KVKey extends string = StorageKey>(
         return { entry: null, status: "MISS" };
       }
 
-      const entry: CacheEntry = {
-        body: value,
-        metadata,
-      };
+      // Parse the stored value — may be the new JSON format or legacy plain body.
+      let body: string;
+      let headers: Record<string, string>;
+      try {
+        const parsed = JSON.parse(value) as KvValue;
+        if (typeof parsed === "object" && parsed !== null && "body" in parsed) {
+          body = parsed.body;
+          headers = parsed.headers ?? {};
+        } else {
+          // Not our format — treat entire value as body (shouldn't happen).
+          body = value;
+          headers = {};
+        }
+      } catch {
+        // Legacy entries stored body as plain text (before the format change).
+        body = value;
+        headers = {};
+      }
 
+      const entry: CacheEntry = { body, headers, metadata };
       const now = Date.now();
       const status = determineCacheStatus(metadata.revalidateAfter, now);
 
@@ -40,7 +70,8 @@ export function createL2Kv<KVKey extends string = StorageKey>(
 
     async put(path: string, entry: CacheEntry): Promise<void> {
       const key = pageKey(path) as KVKey;
-      await kv.put(key, entry.body, { metadata: entry.metadata });
+      const kvValue: KvValue = { body: entry.body, headers: entry.headers };
+      await kv.put(key, JSON.stringify(kvValue), { metadata: entry.metadata });
     },
 
     async delete(path: string): Promise<void> {

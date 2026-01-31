@@ -2,7 +2,6 @@ import type {
   CacheEntry,
   CacheEntryMetadata,
   CacheLayerResult,
-  CacheLayerStatus,
   Logger,
   RenderResult,
   RevalidateValue,
@@ -13,8 +12,25 @@ import { logWarn } from "./logger.ts";
 
 export const DEFAULT_REVALIDATE = 60;
 
+/**
+ * Convert a render result (which may be a raw Response) to a RenderResult.
+ */
+export async function toRenderResult(
+  input: RenderResult | Response,
+): Promise<RenderResult> {
+  if (!(input instanceof Response)) {
+    return input;
+  }
+  const body = await input.text();
+  const headers: Record<string, string> = {};
+  for (const [key, value] of input.headers.entries()) {
+    headers[key] = value;
+  }
+  return { body, status: input.status, headers };
+}
+
 export function sanitizeHeaders(
-  headers: Record<string, string>,
+  headers: Readonly<Record<string, string>>,
   logger?: Logger,
 ): Record<string, string> {
   const safe = new Headers();
@@ -29,7 +45,7 @@ export function sanitizeHeaders(
   return Object.fromEntries(safe.entries());
 }
 
-export function normalizeTags(tags: string[] | undefined): string[] {
+export function normalizeTags(tags: readonly string[] | undefined): string[] {
   if (!tags || tags.length === 0) return [];
   const normalized: string[] = [];
   const seen = new Set<string>();
@@ -77,7 +93,7 @@ export function revalidateAfter(value: RevalidateValue, now: number): number | n
 export function determineCacheStatus(
   revalidateAfterValue: number | null,
   now: number,
-): CacheLayerStatus {
+): "HIT" | "STALE" {
   return revalidateAfterValue === null || now < revalidateAfterValue ? "HIT" : "STALE";
 }
 
@@ -97,13 +113,13 @@ export async function safeCacheGet(options: {
   }
 }
 
-function hasHeader(headers: Record<string, string>, name: string): boolean {
+function hasHeader(headers: Readonly<Record<string, string>>, name: string): boolean {
   const needle = name.toLowerCase();
   return Object.keys(headers).some((key) => key.toLowerCase() === needle);
 }
 
 export function applyCacheControl(
-  headers: Record<string, string>,
+  headers: Readonly<Record<string, string>>,
   revalidateSeconds: RevalidateValue,
   logger?: Logger,
 ): Record<string, string> {
@@ -131,19 +147,12 @@ export function createCacheEntryMetadata(options: {
   routeConfig?: RouteConfig;
   revalidateSeconds: RevalidateValue;
   now: number;
-  logger?: Logger;
 }): CacheEntryMetadata {
-  const { result, routeConfig, revalidateSeconds, now, logger } = options;
-  const responseHeaders = applyCacheControl(
-    result.headers ?? {},
-    revalidateSeconds,
-    logger,
-  );
+  const { result, routeConfig, revalidateSeconds, now } = options;
   return {
     createdAt: now,
     revalidateAfter: revalidateAfter(revalidateSeconds, now),
     status: result.status,
-    headers: responseHeaders,
     tags: normalizeTags(result.tags ?? routeConfig?.tags),
   };
 }
@@ -156,23 +165,27 @@ export function createCacheEntry(options: {
   logger?: Logger;
 }): CacheEntry {
   const metadata = createCacheEntryMetadata(options);
-  return { body: options.result.body, metadata };
+  const headers = applyCacheControl(
+    options.result.headers ?? {},
+    options.revalidateSeconds,
+    options.logger,
+  );
+  return { body: options.result.body, headers, metadata };
 }
 
 export async function updateTagIndexSafely(options: {
   tagIndex: TagIndex;
-  tags: string[];
+  tags: readonly string[];
   key: string;
   logger?: Logger;
   context?: string;
 }): Promise<void> {
   const { tagIndex, tags, key, logger, context } = options;
   if (tags.length === 0) return;
-  const results = await Promise.allSettled(tags.map((tag) => tagIndex.addKeyToTag(tag, key)));
-  const message = context ?? "Failed to update tag index:";
-  for (const result of results) {
-    if (result.status === "rejected") {
-      logWarn(logger, message, result.reason);
-    }
+  try {
+    await tagIndex.addKeyToTags(tags, key);
+  } catch (error) {
+    const message = context ?? "Failed to update tag index:";
+    logWarn(logger, message, error);
   }
 }

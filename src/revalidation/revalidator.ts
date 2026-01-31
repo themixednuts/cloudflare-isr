@@ -13,6 +13,7 @@ import {
   createCacheEntry,
   isNoStore,
   resolveRevalidate,
+  toRenderResult,
   updateTagIndexSafely,
 } from "../utils.ts";
 
@@ -55,7 +56,7 @@ export async function revalidate(options: {
   }
 
   try {
-    const result = await render(request);
+    const result = await toRenderResult(await render(request));
 
     const revalidateSeconds = resolveRevalidate({
       render: result.revalidate,
@@ -154,15 +155,17 @@ export function createRevalidator(options: {
     },
     async revalidateTag(tag: string): Promise<void> {
       const keys = await options.storage.tagIndex.getKeysByTag(tag);
+
+      // Delete cache entries in parallel (concurrency-limited).
       await runWithConcurrency(
         keys,
         MAX_PARALLEL_INVALIDATIONS,
-        async (key) => {
-          await options.storage.cache.delete(key);
-          await options.storage.tagIndex.removeKeyFromTag(tag, key);
-        },
+        (key) => options.storage.cache.delete(key),
         logger,
       );
+
+      // Bulk-remove all tag mappings in a single DO call.
+      await options.storage.tagIndex.removeAllKeysForTag(tag);
     },
   };
 }

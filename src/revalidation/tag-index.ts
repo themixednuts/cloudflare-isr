@@ -8,10 +8,14 @@
 export interface TagIndex {
   /** Associate `cacheKey` with `tag`. No-op if already present. */
   addKeyToTag(tag: string, cacheKey: string): Promise<void>;
+  /** Associate `cacheKey` with multiple `tags` in a single operation. */
+  addKeyToTags(tags: readonly string[], cacheKey: string): Promise<void>;
   /** Return every key associated with `tag`. */
   getKeysByTag(tag: string): Promise<string[]>;
   /** Remove `cacheKey` from `tag`. No-op if not present. */
   removeKeyFromTag(tag: string, cacheKey: string): Promise<void>;
+  /** Remove all keys for `tag` in a single operation. */
+  removeAllKeysForTag(tag: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,7 +32,8 @@ export interface TagIndex {
 export class TagIndexDOClient<
   T extends Rpc.DurableObjectBranded | undefined = undefined,
 > implements TagIndex {
-  private readonly stub: DurableObjectStub<T>;
+  private readonly ns: DurableObjectNamespace<T>;
+  private readonly doName: string;
 
   constructor(
     ns: DurableObjectNamespace<T>,
@@ -37,12 +42,17 @@ export class TagIndexDOClient<
       name?: string;
     },
   ) {
-    const name = options?.name ?? "global";
-    this.stub = ns.get(ns.idFromName(name));
+    this.ns = ns;
+    this.doName = options?.name ?? "global";
+  }
+
+  /** Get a fresh stub for the current request context. */
+  private stub(): DurableObjectStub<T> {
+    return this.ns.get(this.ns.idFromName(this.doName));
   }
 
   async addKeyToTag(tag: string, cacheKey: string): Promise<void> {
-    const res = await this.stub.fetch("http://do/add", {
+    const res = await this.stub().fetch("http://do/add", {
       method: "POST",
       body: JSON.stringify({ tag, key: cacheKey }),
       headers: { "Content-Type": "application/json" },
@@ -51,21 +61,43 @@ export class TagIndexDOClient<
     await res.body?.cancel();
   }
 
+  async addKeyToTags(tags: readonly string[], cacheKey: string): Promise<void> {
+    if (tags.length === 0) return;
+    if (tags.length === 1) return this.addKeyToTag(tags[0]!, cacheKey);
+    const res = await this.stub().fetch("http://do/add-bulk", {
+      method: "POST",
+      body: JSON.stringify({ tags, key: cacheKey }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error(`TagIndexDO add-bulk failed: ${res.status}`);
+    await res.body?.cancel();
+  }
+
   async getKeysByTag(tag: string): Promise<string[]> {
-    const res = await this.stub.fetch(
+    const res = await this.stub().fetch(
       `http://do/get?tag=${encodeURIComponent(tag)}`,
     );
     if (!res.ok) throw new Error(`TagIndexDO get failed: ${res.status}`);
-    return res.json();
+    return res.json<string[]>();
   }
 
   async removeKeyFromTag(tag: string, cacheKey: string): Promise<void> {
-    const res = await this.stub.fetch("http://do/remove", {
+    const res = await this.stub().fetch("http://do/remove", {
       method: "POST",
       body: JSON.stringify({ tag, key: cacheKey }),
       headers: { "Content-Type": "application/json" },
     });
     if (!res.ok) throw new Error(`TagIndexDO remove failed: ${res.status}`);
+    await res.body?.cancel();
+  }
+
+  async removeAllKeysForTag(tag: string): Promise<void> {
+    const res = await this.stub().fetch("http://do/remove-tag", {
+      method: "POST",
+      body: JSON.stringify({ tag }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error(`TagIndexDO remove-tag failed: ${res.status}`);
     await res.body?.cancel();
   }
 }
