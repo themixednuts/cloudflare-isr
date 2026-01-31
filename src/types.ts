@@ -61,8 +61,7 @@ export interface ISRStorage {
 }
 
 export interface LockProvider {
-  acquire(key: string): Promise<boolean>;
-  release(key: string): Promise<void>;
+  acquire(key: string): Promise<AsyncDisposable | null>;
 }
 
 /** Function that maps a URL to a cache key (path + optional query). */

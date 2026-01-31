@@ -21,7 +21,7 @@ describe("renderer", () => {
     expect(fetchedRequest.headers.get("accept")).toBe("text/html");
 
     expect(response).toBeInstanceOf(Response);
-    expect(await response.text()).toBe("<html>page</html>");
+    expect(await (response as Response).text()).toBe("<html>page</html>");
 
     fetchSpy.mockRestore();
   });

@@ -3,9 +3,9 @@ import type { MockedFunction } from "vitest";
 import { env } from "cloudflare:test";
 import { revalidate } from "./revalidator.ts";
 import { lockKey } from "../keys.ts";
-import { acquireLock, releaseLock } from "./lock.ts";
+import { createKvLock } from "./lock.ts";
 import { TagIndexDOClient } from "./tag-index.ts";
-import type { CacheLayer, RenderFunction, RenderResult } from "../types.ts";
+import type { CacheLayer, LockProvider, RenderFunction, RenderResult } from "../types.ts";
 
 function makeMockCache(): CacheLayer {
   return {
@@ -29,6 +29,7 @@ describe("revalidate", () => {
   let cache: CacheLayer;
   let render: MockedFunction<RenderFunction>;
   let tagIndex: TagIndexDOClient;
+  let lock: LockProvider;
 
   async function clearTag(tag: string): Promise<void> {
     await tagIndex.removeAllKeysForTag(tag);
@@ -38,6 +39,7 @@ describe("revalidate", () => {
     cache = makeMockCache();
     render = vi.fn<RenderFunction>().mockResolvedValue(makeRenderResult());
     tagIndex = new TagIndexDOClient(env.TAG_INDEX, { name: "revalidator-tests" });
+    lock = createKvLock(env.ISR_CACHE);
 
     // Clean up KV keys used by tests
     await env.ISR_CACHE.delete(lockKey("/blog/post"));
@@ -51,10 +53,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/blog/post",
       request,
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,
@@ -81,7 +80,7 @@ describe("revalidate", () => {
     const tagKeys = await tagIndex.getKeysByTag("blog");
     expect(tagKeys).toContain("/blog/post");
 
-    // Lock was released
+    // Lock was released (disposed)
     const lockValue = await env.ISR_CACHE.get(lockKey("/blog/post"));
     expect(lockValue).toBeNull();
   });
@@ -95,10 +94,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/blog/post",
       request: new Request("https://example.com/blog/post"),
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,
@@ -116,10 +112,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/blog/post",
       request: new Request("https://example.com/blog/post"),
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,
@@ -135,7 +128,7 @@ describe("revalidate", () => {
     // Cache was NOT deleted (preserves last-known-good)
     expect(cache.delete).not.toHaveBeenCalled();
 
-    // Lock was released
+    // Lock was released (disposed)
     const lockValue = await env.ISR_CACHE.get(lockKey("/blog/post"));
     expect(lockValue).toBeNull();
 
@@ -148,10 +141,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/page",
       request: new Request("https://example.com/page"),
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,
@@ -173,10 +163,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/page",
       request: new Request("https://example.com/page"),
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,
@@ -198,10 +185,7 @@ describe("revalidate", () => {
     await revalidate({
       key: "/page",
       request: new Request("https://example.com/page"),
-      lock: {
-        acquire: (key) => acquireLock(env.ISR_CACHE, key),
-        release: (key) => releaseLock(env.ISR_CACHE, key),
-      },
+      lock,
       tagIndex,
       cache,
       render,

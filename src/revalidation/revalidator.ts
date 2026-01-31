@@ -48,11 +48,9 @@ export async function revalidate(options: {
     logger,
   } = options;
 
-  if (lock) {
-    const locked = await lock.acquire(key);
-    if (!locked) {
-      return;
-    }
+  await using _lock = lock ? await lock.acquire(key) : null;
+  if (lock && !_lock) {
+    return;
   }
 
   try {
@@ -91,10 +89,6 @@ export async function revalidate(options: {
   } catch (error) {
     // Keep last-known-good cache entry — do not delete.
     logError(logger, `Background revalidation failed for "${key}":`, error);
-  } finally {
-    if (lock) {
-      await lock.release(key);
-    }
   }
 }
 

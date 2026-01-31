@@ -11,31 +11,26 @@ import { lockKey, type StorageKey } from "../keys.ts";
  *
  * The lock automatically expires after 60 seconds (KV minimum TTL).
  *
- * @returns `true` if the lock was acquired, `false` if another worker holds it.
+ * @returns An `AsyncDisposable` handle if the lock was acquired, `null` if
+ *          another worker holds it. Disposing the handle releases the lock.
  */
 export async function acquireLock<KVKey extends string = StorageKey>(
   kv: KVNamespace<KVKey>,
   key: string,
-): Promise<boolean> {
+): Promise<AsyncDisposable | null> {
   const lock = lockKey(key) as KVKey;
   const existing = await kv.get(lock);
 
   if (existing !== null) {
-    return false;
+    return null;
   }
 
   await kv.put(lock, Date.now().toString(), { expirationTtl: 60 });
-  return true;
-}
-
-/**
- * Release the distributed lock for the given cache key.
- */
-export async function releaseLock<KVKey extends string = StorageKey>(
-  kv: KVNamespace<KVKey>,
-  key: string,
-): Promise<void> {
-  await kv.delete(lockKey(key) as KVKey);
+  return {
+    async [Symbol.asyncDispose]() {
+      await kv.delete(lock);
+    },
+  };
 }
 
 export function createKvLock<KVKey extends string = StorageKey>(
@@ -43,6 +38,5 @@ export function createKvLock<KVKey extends string = StorageKey>(
 ): LockProvider {
   return {
     acquire: (key) => acquireLock(kv, key),
-    release: (key) => releaseLock(kv, key),
   };
 }

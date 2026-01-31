@@ -1,39 +1,58 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { env } from "cloudflare:test";
-import { acquireLock, releaseLock } from "./lock.ts";
+import { acquireLock } from "./lock.ts";
 import { lockKey } from "../keys.ts";
 
-describe("acquireLock / releaseLock", () => {
+describe("acquireLock", () => {
   beforeEach(async () => {
-    // Clean up lock keys used by tests
     await env.ISR_CACHE.delete(lockKey("/blog/post"));
   });
 
-  it("acquireLock returns true when no lock exists", async () => {
-    const result = await acquireLock(env.ISR_CACHE, "/blog/post");
-    expect(result).toBe(true);
+  it("returns a disposable handle when no lock exists", async () => {
+    const handle = await acquireLock(env.ISR_CACHE, "/blog/post");
+    expect(handle).not.toBeNull();
+    // Clean up
+    await handle![Symbol.asyncDispose]();
   });
 
-  it("acquireLock returns false when lock is already held", async () => {
-    await acquireLock(env.ISR_CACHE, "/blog/post");
+  it("returns null when lock is already held", async () => {
+    const first = await acquireLock(env.ISR_CACHE, "/blog/post");
+    expect(first).not.toBeNull();
+
     const second = await acquireLock(env.ISR_CACHE, "/blog/post");
-    expect(second).toBe(false);
+    expect(second).toBeNull();
+
+    await first![Symbol.asyncDispose]();
   });
 
-  it("releaseLock removes the lock so it can be re-acquired", async () => {
-    await acquireLock(env.ISR_CACHE, "/blog/post");
-    await releaseLock(env.ISR_CACHE, "/blog/post");
+  it("disposing the handle releases the lock so it can be re-acquired", async () => {
+    const first = await acquireLock(env.ISR_CACHE, "/blog/post");
+    expect(first).not.toBeNull();
 
-    const result = await acquireLock(env.ISR_CACHE, "/blog/post");
-    expect(result).toBe(true);
+    await first![Symbol.asyncDispose]();
+
+    const second = await acquireLock(env.ISR_CACHE, "/blog/post");
+    expect(second).not.toBeNull();
+
+    await second![Symbol.asyncDispose]();
   });
 
-  it("lock stores a value in KV under the lock key", async () => {
-    await acquireLock(env.ISR_CACHE, "/blog/post");
+  it("lock stores a timestamp in KV under the lock key", async () => {
+    const handle = await acquireLock(env.ISR_CACHE, "/blog/post");
+    expect(handle).not.toBeNull();
 
     const stored = await env.ISR_CACHE.get(lockKey("/blog/post"));
     expect(stored).not.toBeNull();
-    // The stored value is a timestamp string
     expect(Number(stored)).toBeGreaterThan(0);
+
+    await handle![Symbol.asyncDispose]();
+  });
+
+  it("disposing deletes the KV entry", async () => {
+    const handle = await acquireLock(env.ISR_CACHE, "/blog/post");
+    await handle![Symbol.asyncDispose]();
+
+    const stored = await env.ISR_CACHE.get(lockKey("/blog/post"));
+    expect(stored).toBeNull();
   });
 });
