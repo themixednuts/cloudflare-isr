@@ -16,11 +16,11 @@ describe("createL2Kv", () => {
     const now = Date.now();
     return {
       body: "<html>fresh</html>",
+      headers: { "content-type": "text/html" },
       metadata: {
         createdAt: now,
         revalidateAfter: now + 60_000,
         status: 200,
-        headers: { "content-type": "text/html" },
         tags: ["blog"],
       },
     };
@@ -30,11 +30,11 @@ describe("createL2Kv", () => {
     const now = Date.now();
     return {
       body: "<html>stale</html>",
+      headers: { "content-type": "text/html" },
       metadata: {
         createdAt: now - 120_000,
         revalidateAfter: now - 1_000,
         status: 200,
-        headers: { "content-type": "text/html" },
         tags: [],
       },
     };

@@ -18,11 +18,11 @@ function makeFreshEntry(): CacheEntry {
   const now = Date.now();
   return {
     body: "<html>content</html>",
+    headers: { "content-type": "text/html" },
     metadata: {
       createdAt: now,
       revalidateAfter: now + 60_000,
       status: 200,
-      headers: { "content-type": "text/html" },
       tags: [],
     },
   };
@@ -32,11 +32,11 @@ function makeStaleEntry(): CacheEntry {
   const now = Date.now();
   return {
     body: "<html>stale</html>",
+    headers: { "content-type": "text/html" },
     metadata: {
       createdAt: now - 120_000,
       revalidateAfter: now - 1_000,
       status: 200,
-      headers: { "content-type": "text/html" },
       tags: [],
     },
   };

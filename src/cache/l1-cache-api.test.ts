@@ -18,11 +18,11 @@ describe("createL1CacheApi", () => {
     const now = Date.now();
     return {
       body: "<html>fresh</html>",
+      headers: { "content-type": "text/html" },
       metadata: {
         createdAt: now,
         revalidateAfter: now + 60_000, // 60s in the future
         status: 200,
-        headers: { "content-type": "text/html" },
         tags: ["blog"],
       },
     };
@@ -32,11 +32,11 @@ describe("createL1CacheApi", () => {
     const now = Date.now();
     return {
       body: "<html>stale</html>",
+      headers: { "content-type": "text/html" },
       metadata: {
         createdAt: now - 120_000,
         revalidateAfter: now - 1_000, // 1s in the past
         status: 200,
-        headers: { "content-type": "text/html" },
         tags: [],
       },
     };

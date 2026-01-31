@@ -39,8 +39,7 @@ describe("createISR / handleRequest", () => {
   const TEST_TAGS = ["blog", "static"];
 
   async function clearTag(tag: string): Promise<void> {
-    const keys = await tagIndex.getKeysByTag(tag);
-    await Promise.all(keys.map((key) => tagIndex.removeKeyFromTag(tag, key)));
+    await tagIndex.removeAllKeysForTag(tag);
   }
 
   beforeEach(async () => {
@@ -80,16 +79,15 @@ describe("createISR / handleRequest", () => {
     });
   }
 
-  it("passes through non-GET requests without caching", async () => {
+  it("returns null for non-GET requests", async () => {
     const ctx = createExecutionContext();
     const isr = createDefaultISR();
     const request = new Request("https://example.com/page", { method: "POST" });
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-ISR-Status")).toBe("SKIP");
-    expect(render).toHaveBeenCalled();
+    expect(response).toBeNull();
+    expect(render).not.toHaveBeenCalled();
   });
 
   it("returns BYPASS response when bypass token matches", async () => {
@@ -102,7 +100,8 @@ describe("createISR / handleRequest", () => {
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
-    expect(response.headers.get("X-ISR-Status")).toBe("BYPASS");
+    expect(response).not.toBeNull();
+    expect(response!.headers.get("X-ISR-Status")).toBe("BYPASS");
     expect(render).toHaveBeenCalled();
   });
 
@@ -115,7 +114,7 @@ describe("createISR / handleRequest", () => {
     const res1 = await isr.handleRequest(req1, ctx1);
     await waitOnExecutionContext(ctx1);
 
-    expect(res1.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(res1!.headers.get("X-ISR-Status")).toBe("SKIP");
 
     const ctx2 = createExecutionContext();
     const req2 = new Request("https://example.com/page");
@@ -133,13 +132,13 @@ describe("createISR / handleRequest", () => {
     const req1 = new Request("https://example.com/page");
     const res1 = await isr.handleRequest(req1, ctx1);
     await waitOnExecutionContext(ctx1);
-    expect(res1.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
 
     const ctx2 = createExecutionContext();
     const req2 = new Request("https://example.com/page");
     const res2 = await isr.handleRequest(req2, ctx2);
     await waitOnExecutionContext(ctx2);
-    expect(res2.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
     expect(render).toHaveBeenCalledTimes(1);
   });
 
@@ -151,9 +150,10 @@ describe("createISR / handleRequest", () => {
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-ISR-Status")).toBe("MISS");
-    expect(await response.text()).toBe("<html>Hello</html>");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await response!.text()).toBe("<html>Hello</html>");
     expect(render).toHaveBeenCalledTimes(1);
   });
 
@@ -165,15 +165,15 @@ describe("createISR / handleRequest", () => {
     const req1 = new Request("https://example.com/blog/hello");
     const res1 = await isr.handleRequest(req1, ctx);
     await waitOnExecutionContext(ctx);
-    expect(res1.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
 
     // Second request - HIT
     const ctx2 = createExecutionContext();
     const req2 = new Request("https://example.com/blog/hello");
     const res2 = await isr.handleRequest(req2, ctx2);
     await waitOnExecutionContext(ctx2);
-    expect(res2.headers.get("X-ISR-Status")).toBe("HIT");
-    expect(await res2.text()).toBe("<html>Hello</html>");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res2!.text()).toBe("<html>Hello</html>");
 
     // Render was called only once (for the MISS)
     expect(render).toHaveBeenCalledTimes(1);
@@ -189,7 +189,7 @@ describe("createISR / handleRequest", () => {
     const req1 = new Request("https://example.com/page");
     const res1 = await isr.handleRequest(req1, ctx1);
     await waitOnExecutionContext(ctx1);
-    expect(res1.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
 
     // Wait a tiny bit so Date.now() advances past revalidateAfter
     await new Promise((r) => setTimeout(r, 10));
@@ -199,7 +199,7 @@ describe("createISR / handleRequest", () => {
     const ctx2 = createExecutionContext();
     const req2 = new Request("https://example.com/page");
     const res2 = await isr.handleRequest(req2, ctx2);
-    expect(res2.headers.get("X-ISR-Status")).toBe("STALE");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("STALE");
 
     // Wait for background revalidation to complete
     await waitOnExecutionContext(ctx2);
@@ -225,8 +225,8 @@ describe("createISR / handleRequest", () => {
     const req2 = new Request("https://example.com/blog/hello");
     const res2 = await isr.handleRequest(req2, ctx2);
     await waitOnExecutionContext(ctx2);
-    expect(res2.headers.get("X-ISR-Status")).toBe("MISS");
-    expect(await res2.text()).toBe("<html>New Content</html>");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res2!.text()).toBe("<html>New Content</html>");
   });
 
   it("revalidateTag deletes all tagged paths", async () => {
@@ -255,7 +255,7 @@ describe("createISR / handleRequest", () => {
       ctx3,
     );
     await waitOnExecutionContext(ctx3);
-    expect(res3.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res3!.headers.get("X-ISR-Status")).toBe("MISS");
 
     render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh B</html>" }));
     const ctx4 = createExecutionContext();
@@ -264,10 +264,10 @@ describe("createISR / handleRequest", () => {
       ctx4,
     );
     await waitOnExecutionContext(ctx4);
-    expect(res4.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res4!.headers.get("X-ISR-Status")).toBe("MISS");
   });
 
-  it("skips caching when route is not configured", async () => {
+  it("returns null when route is not configured", async () => {
     const ctx = createExecutionContext();
     const isr = createDefaultISR({
       routes: {
@@ -279,8 +279,8 @@ describe("createISR / handleRequest", () => {
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
-    expect(response.headers.get("X-ISR-Status")).toBe("SKIP");
-    expect(render).toHaveBeenCalledTimes(1);
+    expect(response).toBeNull();
+    expect(render).not.toHaveBeenCalled();
   });
 
   it("route matching works with wildcards", async () => {
@@ -299,7 +299,7 @@ describe("createISR / handleRequest", () => {
     const req1 = new Request("https://example.com/blog/post");
     const res1 = await isr.handleRequest(req1, ctx);
     await waitOnExecutionContext(ctx);
-    expect(res1.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
 
     // Verify tags from route config were applied by checking the tag index
     const blogKeys = await tagIndex.getKeysByTag("blog");
@@ -320,7 +320,7 @@ describe("createISR / handleRequest", () => {
     const req = new Request("https://example.com/blog/post");
     const res = await isr.handleRequest(req, ctx);
     await waitOnExecutionContext(ctx);
-    expect(res.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
 
     const blogKeys = await tagIndex.getKeysByTag("blog");
     expect(blogKeys).toContain("/blog/post");
@@ -340,10 +340,23 @@ describe("createISR / handleRequest", () => {
     const req = new Request("https://example.com/about");
     const res = await isr.handleRequest(req, ctx);
     await waitOnExecutionContext(ctx);
-    expect(res.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
 
     const staticKeys = await tagIndex.getKeysByTag("static");
     expect(staticKeys).toContain("/about");
+  });
+
+  it("returns null for ISR render header (recursion guard)", async () => {
+    const ctx = createExecutionContext();
+    const isr = createDefaultISR();
+    const request = new Request("https://example.com/page", {
+      headers: { "X-ISR-Rendering": "1" },
+    });
+    const response = await isr.handleRequest(request, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response).toBeNull();
+    expect(render).not.toHaveBeenCalled();
   });
 
   it("HEAD requests are also handled", async () => {
@@ -352,7 +365,8 @@ describe("createISR / handleRequest", () => {
     const request = new Request("https://example.com/page", { method: "HEAD" });
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
   });
 });

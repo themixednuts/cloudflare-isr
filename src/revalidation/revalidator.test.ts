@@ -31,8 +31,7 @@ describe("revalidate", () => {
   let tagIndex: TagIndexDOClient;
 
   async function clearTag(tag: string): Promise<void> {
-    const keys = await tagIndex.getKeysByTag(tag);
-    await Promise.all(keys.map((key) => tagIndex.removeKeyFromTag(tag, key)));
+    await tagIndex.removeAllKeysForTag(tag);
   }
 
   beforeEach(async () => {
@@ -70,6 +69,7 @@ describe("revalidate", () => {
       "/blog/post",
       expect.objectContaining({
         body: "<html>rendered</html>",
+        headers: expect.objectContaining({ "content-type": "text/html" }),
         metadata: expect.objectContaining({
           status: 200,
           tags: ["blog"],
