@@ -35,6 +35,8 @@ describe("createISR / handleRequest", () => {
     "/blog/b",
     "/blog/post",
     "/about",
+    "/custom-key",
+    "/error-page",
   ];
   const TEST_TAGS = ["blog", "static"];
 
@@ -79,279 +81,14 @@ describe("createISR / handleRequest", () => {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Method filtering
+  // ---------------------------------------------------------------------------
+
   it("returns null for non-GET requests", async () => {
     const ctx = createExecutionContext();
     const isr = createDefaultISR();
     const request = new Request("https://example.com/page", { method: "POST" });
-    const response = await isr.handleRequest(request, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(response).toBeNull();
-    expect(render).not.toHaveBeenCalled();
-  });
-
-  it("returns BYPASS response when bypass token matches", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR({ bypassToken: "secret-token" });
-    const request = new Request("https://example.com/page", {
-      headers: { "x-isr-bypass": "secret-token" },
-    });
-
-    const response = await isr.handleRequest(request, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(response).not.toBeNull();
-    expect(response!.headers.get("X-ISR-Status")).toBe("BYPASS");
-    expect(render).toHaveBeenCalled();
-  });
-
-  it("skips caching when revalidate is 0", async () => {
-    render.mockResolvedValue(makeRenderResult({ revalidate: 0 }));
-    const ctx1 = createExecutionContext();
-    const isr = createDefaultISR();
-    const req1 = new Request("https://example.com/page");
-
-    const res1 = await isr.handleRequest(req1, ctx1);
-    await waitOnExecutionContext(ctx1);
-
-    expect(res1!.headers.get("X-ISR-Status")).toBe("SKIP");
-
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/page");
-    await isr.handleRequest(req2, ctx2);
-    await waitOnExecutionContext(ctx2);
-
-    expect(render).toHaveBeenCalledTimes(2);
-  });
-
-  it("caches forever when revalidate is false", async () => {
-    render.mockResolvedValue(makeRenderResult({ revalidate: false }));
-    const isr = createDefaultISR();
-
-    const ctx1 = createExecutionContext();
-    const req1 = new Request("https://example.com/page");
-    const res1 = await isr.handleRequest(req1, ctx1);
-    await waitOnExecutionContext(ctx1);
-    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/page");
-    const res2 = await isr.handleRequest(req2, ctx2);
-    await waitOnExecutionContext(ctx2);
-    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
-    expect(render).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns MISS on first request (renders and caches)", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR();
-    const request = new Request("https://example.com/blog/hello");
-
-    const response = await isr.handleRequest(request, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(response).not.toBeNull();
-    expect(response!.status).toBe(200);
-    expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
-    expect(await response!.text()).toBe("<html>Hello</html>");
-    expect(render).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns HIT on second request (from cache)", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR();
-
-    // First request - MISS
-    const req1 = new Request("https://example.com/blog/hello");
-    const res1 = await isr.handleRequest(req1, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    // Second request - HIT
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/blog/hello");
-    const res2 = await isr.handleRequest(req2, ctx2);
-    await waitOnExecutionContext(ctx2);
-    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
-    expect(await res2!.text()).toBe("<html>Hello</html>");
-
-    // Render was called only once (for the MISS)
-    expect(render).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns STALE and triggers background revalidation", async () => {
-    // Use a very short revalidate so the entry becomes stale immediately
-    render.mockResolvedValue(makeRenderResult({ revalidate: 0.001 }));
-    const isr = createDefaultISR();
-
-    // First request - MISS, entry gets revalidateAfter = now + 0*1000 = now
-    const ctx1 = createExecutionContext();
-    const req1 = new Request("https://example.com/page");
-    const res1 = await isr.handleRequest(req1, ctx1);
-    await waitOnExecutionContext(ctx1);
-    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    // Wait a tiny bit so Date.now() advances past revalidateAfter
-    await new Promise((r) => setTimeout(r, 10));
-
-    // Second request - should be STALE
-    render.mockResolvedValue(makeRenderResult({ body: "<html>Updated</html>" }));
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/page");
-    const res2 = await isr.handleRequest(req2, ctx2);
-    expect(res2!.headers.get("X-ISR-Status")).toBe("STALE");
-
-    // Wait for background revalidation to complete
-    await waitOnExecutionContext(ctx2);
-  });
-
-  it("revalidatePath deletes cache entry", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR();
-
-    // Populate cache
-    const req = new Request("https://example.com/blog/hello");
-    await isr.handleRequest(req, ctx);
-    await waitOnExecutionContext(ctx);
-
-    // Revalidate the path (deletes from cache)
-    await isr.revalidatePath("/blog/hello");
-
-    // Next request should be a MISS again
-    render.mockResolvedValue(
-      makeRenderResult({ body: "<html>New Content</html>" }),
-    );
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/blog/hello");
-    const res2 = await isr.handleRequest(req2, ctx2);
-    await waitOnExecutionContext(ctx2);
-    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
-    expect(await res2!.text()).toBe("<html>New Content</html>");
-  });
-
-  it("revalidateTag deletes all tagged paths", async () => {
-    render.mockResolvedValue(makeRenderResult({ tags: ["blog"] }));
-    const isr = createDefaultISR();
-
-    // Populate cache for two blog pages
-    const ctx1 = createExecutionContext();
-    const req1 = new Request("https://example.com/blog/a");
-    await isr.handleRequest(req1, ctx1);
-    await waitOnExecutionContext(ctx1);
-
-    const ctx2 = createExecutionContext();
-    const req2 = new Request("https://example.com/blog/b");
-    await isr.handleRequest(req2, ctx2);
-    await waitOnExecutionContext(ctx2);
-
-    // Revalidate by tag
-    await isr.revalidateTag("blog");
-
-    // Both should now be MISS
-    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh A</html>" }));
-    const ctx3 = createExecutionContext();
-    const res3 = await isr.handleRequest(
-      new Request("https://example.com/blog/a"),
-      ctx3,
-    );
-    await waitOnExecutionContext(ctx3);
-    expect(res3!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh B</html>" }));
-    const ctx4 = createExecutionContext();
-    const res4 = await isr.handleRequest(
-      new Request("https://example.com/blog/b"),
-      ctx4,
-    );
-    await waitOnExecutionContext(ctx4);
-    expect(res4!.headers.get("X-ISR-Status")).toBe("MISS");
-  });
-
-  it("returns null when route is not configured", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR({
-      routes: {
-        "/about": { revalidate: 60 },
-      },
-    });
-    const request = new Request("https://example.com/other");
-
-    const response = await isr.handleRequest(request, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(response).toBeNull();
-    expect(render).not.toHaveBeenCalled();
-  });
-
-  it("route matching works with wildcards", async () => {
-    const isr = createDefaultISR({
-      routes: {
-        "/blog/*": { revalidate: 10, tags: ["blog"] },
-        "/about": { revalidate: 300 },
-      },
-    });
-
-    // /blog/post should match the wildcard route
-    render.mockResolvedValue(
-      makeRenderResult({ revalidate: undefined, tags: undefined }),
-    );
-    const ctx = createExecutionContext();
-    const req1 = new Request("https://example.com/blog/post");
-    const res1 = await isr.handleRequest(req1, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    // Verify tags from route config were applied by checking the tag index
-    const blogKeys = await tagIndex.getKeysByTag("blog");
-    expect(blogKeys).toContain("/blog/post");
-  });
-
-  it("route matching works with bracket params", async () => {
-    const isr = createDefaultISR({
-      routes: {
-        "/blog/[slug]": { revalidate: 10, tags: ["blog"] },
-      },
-    });
-
-    render.mockResolvedValue(
-      makeRenderResult({ revalidate: undefined, tags: undefined }),
-    );
-    const ctx = createExecutionContext();
-    const req = new Request("https://example.com/blog/post");
-    const res = await isr.handleRequest(req, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    const blogKeys = await tagIndex.getKeysByTag("blog");
-    expect(blogKeys).toContain("/blog/post");
-  });
-
-  it("route matching works with exact match", async () => {
-    const isr = createDefaultISR({
-      routes: {
-        "/about": { revalidate: 300, tags: ["static"] },
-      },
-    });
-
-    render.mockResolvedValue(
-      makeRenderResult({ revalidate: undefined, tags: undefined }),
-    );
-    const ctx = createExecutionContext();
-    const req = new Request("https://example.com/about");
-    const res = await isr.handleRequest(req, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
-
-    const staticKeys = await tagIndex.getKeysByTag("static");
-    expect(staticKeys).toContain("/about");
-  });
-
-  it("returns null for ISR render header (recursion guard)", async () => {
-    const ctx = createExecutionContext();
-    const isr = createDefaultISR();
-    const request = new Request("https://example.com/page", {
-      headers: { "X-ISR-Rendering": "1" },
-    });
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
@@ -368,5 +105,527 @@ describe("createISR / handleRequest", () => {
     expect(response).not.toBeNull();
     expect(response!.status).toBe(200);
     expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
+  });
+
+  it("returns null for ISR render header (recursion guard)", async () => {
+    const ctx = createExecutionContext();
+    const isr = createDefaultISR();
+    const request = new Request("https://example.com/page", {
+      headers: { "X-ISR-Rendering": "1" },
+    });
+    const response = await isr.handleRequest(request, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // BYPASS
+  // ---------------------------------------------------------------------------
+
+  it("BYPASS: renders fresh, sets no-store, does not cache", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh</html>" }));
+    const isr = createDefaultISR({ bypassToken: "secret-token" });
+
+    const ctx = createExecutionContext();
+    const request = new Request("https://example.com/page", {
+      headers: { "x-isr-bypass": "secret-token" },
+    });
+    const response = await isr.handleRequest(request, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response).not.toBeNull();
+    expect(response!.headers.get("X-ISR-Status")).toBe("BYPASS");
+    expect(response!.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response!.text()).toBe("<html>Fresh</html>");
+    // No X-ISR-Cache-Date since this is not from cache
+    expect(response!.headers.get("X-ISR-Cache-Date")).toBeNull();
+    expect(render).toHaveBeenCalledTimes(1);
+
+    // Next request without bypass should be MISS (nothing was cached)
+    const ctx2 = createExecutionContext();
+    const req2 = new Request("https://example.com/page");
+    const res2 = await isr.handleRequest(req2, ctx2);
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+  });
+
+  // ---------------------------------------------------------------------------
+  // SKIP (revalidate: 0)
+  // ---------------------------------------------------------------------------
+
+  it("SKIP via render result: sets no-store, renders every time", async () => {
+    render.mockResolvedValue(makeRenderResult({ revalidate: 0, body: "<html>Dynamic</html>" }));
+    const isr = createDefaultISR();
+
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    expect(res1!.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(res1!.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res1!.text()).toBe("<html>Dynamic</html>");
+
+    // Second request also renders fresh
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  it("SKIP via route config: revalidate 0 on route skips without render deciding", async () => {
+    // Render doesn't set revalidate — the route config forces SKIP
+    render.mockResolvedValue(makeRenderResult({ revalidate: undefined }));
+    const isr = createDefaultISR({
+      routes: { "/page": { revalidate: 0 } },
+    });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(res!.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  // ---------------------------------------------------------------------------
+  // MISS
+  // ---------------------------------------------------------------------------
+
+  it("MISS: renders, caches, returns body with correct headers", async () => {
+    render.mockResolvedValue(makeRenderResult({
+      body: "<html>First</html>",
+      headers: { "content-type": "text/html" },
+    }));
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    const response = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(response!.headers.get("X-ISR-Cache-Date")).not.toBeNull();
+    expect(response!.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(await response!.text()).toBe("<html>First</html>");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // HIT
+  // ---------------------------------------------------------------------------
+
+  it("HIT: serves cached body with cache date header, no re-render", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Cached</html>" }));
+    const isr = createDefaultISR();
+
+    // MISS
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    const missDate = res1!.headers.get("X-ISR-Cache-Date");
+
+    // HIT
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res2!.text()).toBe("<html>Cached</html>");
+    expect(res2!.headers.get("X-ISR-Cache-Date")).toBe(missDate);
+    expect(res2!.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // STALE → background revalidation
+  // ---------------------------------------------------------------------------
+
+  it("STALE: serves old content, background revalidation updates cache", async () => {
+    render.mockResolvedValue(makeRenderResult({
+      body: "<html>Old</html>",
+      revalidate: 0.001,
+    }));
+    const isr = createDefaultISR();
+
+    // First request — MISS, caches with very short TTL
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res1!.text()).toBe("<html>Old</html>");
+
+    // Wait for entry to become stale
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Second request — STALE, serves OLD content immediately
+    render.mockResolvedValue(makeRenderResult({
+      body: "<html>New</html>",
+      revalidate: 60,
+    }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    expect(res2!.headers.get("X-ISR-Status")).toBe("STALE");
+    expect(await res2!.text()).toBe("<html>Old</html>");
+
+    // Wait for background revalidation to complete
+    await waitOnExecutionContext(ctx2);
+
+    // Third request — HIT with NEW content from background revalidation
+    const ctx3 = createExecutionContext();
+    const res3 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx3,
+    );
+    await waitOnExecutionContext(ctx3);
+    expect(res3!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res3!.text()).toBe("<html>New</html>");
+
+    // Render called twice: once for MISS, once for background revalidation
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cache forever (revalidate: false)
+  // ---------------------------------------------------------------------------
+
+  it("caches forever when revalidate is false, immutable Cache-Control", async () => {
+    render.mockResolvedValue(makeRenderResult({ revalidate: false }));
+    const isr = createDefaultISR();
+
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res1!.headers.get("Cache-Control")).toContain("immutable");
+
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // revalidatePath / revalidateTag
+  // ---------------------------------------------------------------------------
+
+  it("revalidatePath: next request is MISS with fresh content", async () => {
+    const isr = createDefaultISR();
+
+    // Populate cache
+    const ctx = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/hello"), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Purge
+    await isr.revalidatePath("/blog/hello");
+
+    // Verify MISS with new content
+    render.mockResolvedValue(makeRenderResult({ body: "<html>New</html>" }));
+    const ctx2 = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res!.text()).toBe("<html>New</html>");
+  });
+
+  it("revalidateTag: invalidates all paths with that tag", async () => {
+    render.mockResolvedValue(makeRenderResult({ tags: ["blog"] }));
+    const isr = createDefaultISR();
+
+    // Populate two pages
+    const ctx1 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/a"), ctx1);
+    await waitOnExecutionContext(ctx1);
+
+    const ctx2 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/b"), ctx2);
+    await waitOnExecutionContext(ctx2);
+
+    // Verify both are cached
+    const ctx3 = createExecutionContext();
+    const hitA = await isr.handleRequest(new Request("https://example.com/blog/a"), ctx3);
+    await waitOnExecutionContext(ctx3);
+    expect(hitA!.headers.get("X-ISR-Status")).toBe("HIT");
+
+    // Invalidate tag
+    await isr.revalidateTag("blog");
+
+    // Both should be MISS now
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh A</html>" }));
+    const ctx4 = createExecutionContext();
+    const resA = await isr.handleRequest(new Request("https://example.com/blog/a"), ctx4);
+    await waitOnExecutionContext(ctx4);
+    expect(resA!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await resA!.text()).toBe("<html>Fresh A</html>");
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh B</html>" }));
+    const ctx5 = createExecutionContext();
+    const resB = await isr.handleRequest(new Request("https://example.com/blog/b"), ctx5);
+    await waitOnExecutionContext(ctx5);
+    expect(resB!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await resB!.text()).toBe("<html>Fresh B</html>");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Route configuration
+  // ---------------------------------------------------------------------------
+
+  it("returns null when route is not in configured routes", async () => {
+    const ctx = createExecutionContext();
+    const isr = createDefaultISR({
+      routes: { "/about": { revalidate: 60 } },
+    });
+    const response = await isr.handleRequest(
+      new Request("https://example.com/other"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(response).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("route wildcard applies route tags when render has none", async () => {
+    const isr = createDefaultISR({
+      routes: { "/blog/*": { revalidate: 10, tags: ["blog"] } },
+    });
+
+    render.mockResolvedValue(makeRenderResult({ tags: undefined }));
+    const ctx = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/post"), ctx);
+    await waitOnExecutionContext(ctx);
+
+    const blogKeys = await tagIndex.getKeysByTag("blog");
+    expect(blogKeys).toContain("/blog/post");
+  });
+
+  it("route bracket params match correctly", async () => {
+    const isr = createDefaultISR({
+      routes: { "/blog/[slug]": { revalidate: 10, tags: ["blog"] } },
+    });
+
+    render.mockResolvedValue(makeRenderResult({ tags: undefined }));
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/blog/post"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    const blogKeys = await tagIndex.getKeysByTag("blog");
+    expect(blogKeys).toContain("/blog/post");
+  });
+
+  it("exact route match works", async () => {
+    const isr = createDefaultISR({
+      routes: { "/about": { revalidate: 300, tags: ["static"] } },
+    });
+
+    render.mockResolvedValue(makeRenderResult({ tags: undefined }));
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/about"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    const staticKeys = await tagIndex.getKeysByTag("static");
+    expect(staticKeys).toContain("/about");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Non-200 status codes
+  // ---------------------------------------------------------------------------
+
+  it("preserves non-200 status through cache", async () => {
+    render.mockResolvedValue(makeRenderResult({ status: 404, body: "Not Found" }));
+    const isr = createDefaultISR();
+
+    // MISS — caches the 404
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1!.status).toBe(404);
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // HIT — serves the cached 404
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.status).toBe(404);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res2!.text()).toBe("Not Found");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Render returning a raw Response
+  // ---------------------------------------------------------------------------
+
+  it("handles render returning a raw Response object", async () => {
+    render.mockResolvedValue(
+      new Response("<html>From Response</html>", {
+        status: 200,
+        headers: { "content-type": "text/html", "x-custom": "yes" },
+      }),
+    );
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res!.text()).toBe("<html>From Response</html>");
+    expect(res!.headers.get("x-custom")).toBe("yes");
+
+    // Confirm it was cached (HIT on second request)
+    render.mockResolvedValue(new Response("should not be called"));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res2!.text()).toBe("<html>From Response</html>");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Custom cacheKey function
+  // ---------------------------------------------------------------------------
+
+  it("uses custom cacheKey function", async () => {
+    const isr = createDefaultISR({
+      cacheKey: (url: URL) => url.pathname + url.search,
+    });
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>A</html>" }));
+    const ctx1 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/page?v=1"), ctx1);
+    await waitOnExecutionContext(ctx1);
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>B</html>" }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page?v=2"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+
+    // Different query = different cache key = MISS (not HIT)
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res2!.text()).toBe("<html>B</html>");
+
+    // Same query = HIT
+    const ctx3 = createExecutionContext();
+    const res3 = await isr.handleRequest(
+      new Request("https://example.com/page?v=1"), ctx3,
+    );
+    await waitOnExecutionContext(ctx3);
+    expect(res3!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res3!.text()).toBe("<html>A</html>");
+  });
+
+  // ---------------------------------------------------------------------------
+  // No render function
+  // ---------------------------------------------------------------------------
+
+  it("throws when handleRequest is called without a render function", async () => {
+    const storage = createWorkersStorage({
+      kv: env.ISR_CACHE,
+      cacheName: CACHE_NAME,
+      tagIndex,
+    });
+    const isr = createISR({ storage, defaultRevalidate: 60 });
+
+    const ctx = createExecutionContext();
+    await expect(
+      isr.handleRequest(new Request("https://example.com/page"), ctx),
+    ).rejects.toThrow("No render function provided");
+    await waitOnExecutionContext(ctx);
+  });
+
+  // ---------------------------------------------------------------------------
+  // No routes = all paths cached
+  // ---------------------------------------------------------------------------
+
+  it("caches all paths when no routes are configured", async () => {
+    const isr = createDefaultISR(); // no routes option
+
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/anything/at/all"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1).not.toBeNull();
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Route revalidate overrides default
+  // ---------------------------------------------------------------------------
+
+  it("route revalidate overrides defaultRevalidate in Cache-Control", async () => {
+    render.mockResolvedValue(makeRenderResult({ revalidate: undefined }));
+    const isr = createDefaultISR({
+      routes: { "/page": { revalidate: 300 } },
+    });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("Cache-Control")).toContain("s-maxage=300");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Render revalidate overrides route
+  // ---------------------------------------------------------------------------
+
+  it("render result revalidate overrides route config", async () => {
+    render.mockResolvedValue(makeRenderResult({ revalidate: 30 }));
+    const isr = createDefaultISR({
+      routes: { "/page": { revalidate: 300 } },
+    });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("Cache-Control")).toContain("s-maxage=30");
   });
 });
