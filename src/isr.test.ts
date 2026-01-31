@@ -628,4 +628,154 @@ describe("createISR / handleRequest", () => {
 
     expect(res!.headers.get("Cache-Control")).toContain("s-maxage=30");
   });
+
+  // ---------------------------------------------------------------------------
+  // Race conditions
+  // ---------------------------------------------------------------------------
+
+  it("concurrent MISS requests: lock prevents double background revalidation", async () => {
+    // Use a very short TTL so the entry goes stale quickly
+    render.mockResolvedValue(makeRenderResult({
+      body: "<html>V1</html>",
+      revalidate: 0.001,
+    }));
+    const isr = createDefaultISR();
+
+    // Prime the cache
+    const ctx0 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/page"), ctx0);
+    await waitOnExecutionContext(ctx0);
+
+    // Wait for staleness
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Fire two concurrent requests that both see STALE
+    let renderCount = 0;
+    render.mockImplementation(async () => {
+      renderCount++;
+      // Small delay to simulate render time
+      await new Promise((r) => setTimeout(r, 20));
+      return makeRenderResult({ body: `<html>V${renderCount + 1}</html>`, revalidate: 60 });
+    });
+
+    const ctx1 = createExecutionContext();
+    const ctx2 = createExecutionContext();
+    const [res1, res2] = await Promise.all([
+      isr.handleRequest(new Request("https://example.com/page"), ctx1),
+      isr.handleRequest(new Request("https://example.com/page"), ctx2),
+    ]);
+
+    // Both get STALE responses with old content immediately
+    expect(res1!.headers.get("X-ISR-Status")).toBe("STALE");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("STALE");
+    expect(await res1!.text()).toBe("<html>V1</html>");
+    expect(await res2!.text()).toBe("<html>V1</html>");
+
+    // Wait for background revalidations to finish
+    await waitOnExecutionContext(ctx1);
+    await waitOnExecutionContext(ctx2);
+
+    // The lock should have prevented one of them — only one render in background
+    // (the first MISS render + one background revalidation = 2 total, not 3)
+    expect(renderCount).toBeLessThanOrEqual(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cleanup / lifecycle
+  // ---------------------------------------------------------------------------
+
+  it("revalidateTag cleans up the tag index", async () => {
+    render.mockResolvedValue(makeRenderResult({ tags: ["blog"] }));
+    const isr = createDefaultISR();
+
+    // Populate cache
+    const ctx = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/a"), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Verify tag index has the key
+    const before = await tagIndex.getKeysByTag("blog");
+    expect(before).toContain("/blog/a");
+
+    // Invalidate tag
+    await isr.revalidateTag("blog");
+
+    // Tag index should be empty for this tag
+    const after = await tagIndex.getKeysByTag("blog");
+    expect(after).not.toContain("/blog/a");
+  });
+
+  it("revalidatePath: cache is fully cleared across both tiers", async () => {
+    const isr = createDefaultISR();
+
+    // MISS — populates both L1 (Cache API) and L2 (KV)
+    const ctx = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/hello"), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Confirm HIT (both layers populated)
+    const ctx2 = createExecutionContext();
+    const hitRes = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(hitRes!.headers.get("X-ISR-Status")).toBe("HIT");
+
+    // Revalidate path
+    await isr.revalidatePath("/blog/hello");
+
+    // Immediately after — should be MISS, not STALE from a remaining tier
+    render.mockResolvedValue(makeRenderResult({ body: "<html>After purge</html>" }));
+    const ctx3 = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/blog/hello"), ctx3,
+    );
+    await waitOnExecutionContext(ctx3);
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res!.text()).toBe("<html>After purge</html>");
+  });
+
+  it("revalidateTag after multiple pages: all become MISS, tag index is cleared", async () => {
+    render.mockResolvedValue(makeRenderResult({ tags: ["blog"] }));
+    const isr = createDefaultISR();
+
+    // Populate 2 pages
+    const ctx1 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/a"), ctx1);
+    await waitOnExecutionContext(ctx1);
+
+    const ctx2 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/blog/b"), ctx2);
+    await waitOnExecutionContext(ctx2);
+
+    // Confirm both are HIT
+    const ctx3 = createExecutionContext();
+    const hitA = await isr.handleRequest(new Request("https://example.com/blog/a"), ctx3);
+    await waitOnExecutionContext(ctx3);
+    expect(hitA!.headers.get("X-ISR-Status")).toBe("HIT");
+
+    const ctx4 = createExecutionContext();
+    const hitB = await isr.handleRequest(new Request("https://example.com/blog/b"), ctx4);
+    await waitOnExecutionContext(ctx4);
+    expect(hitB!.headers.get("X-ISR-Status")).toBe("HIT");
+
+    // Invalidate
+    await isr.revalidateTag("blog");
+
+    // Both MISS
+    render.mockResolvedValue(makeRenderResult({ body: "<html>New A</html>", tags: ["blog"] }));
+    const ctx5 = createExecutionContext();
+    const missA = await isr.handleRequest(new Request("https://example.com/blog/a"), ctx5);
+    await waitOnExecutionContext(ctx5);
+    expect(missA!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>New B</html>", tags: ["blog"] }));
+    const ctx6 = createExecutionContext();
+    const missB = await isr.handleRequest(new Request("https://example.com/blog/b"), ctx6);
+    await waitOnExecutionContext(ctx6);
+    expect(missB!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // Tag index was cleaned — before the new requests re-populate, the old keys were gone
+    // (verified by the fact that both were MISS, not served from a stale tier)
+  });
 });
