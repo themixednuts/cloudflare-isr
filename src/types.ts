@@ -17,8 +17,8 @@ import type { TagIndex } from "./revalidation/tag-index.ts";
 /** Revalidation behavior for a cached response (seconds, 0 = no store, false = forever). */
 export type RevalidateValue = number | false;
 
-/** Common response shape shared by render and cache metadata. */
-export interface ResponseShape {
+/** Result of rendering a page. */
+export interface RenderResult {
   /** The rendered HTML (or other body content). */
   body: string;
   /** HTTP status code for the response. */
@@ -27,13 +27,9 @@ export interface ResponseShape {
   headers?: Readonly<Record<string, string>>;
   /** Optional tags for tag-based cache invalidation. */
   tags?: readonly string[];
-}
-
-/** Result of rendering a page. */
-export type RenderResult = ResponseShape & {
   /** Per-page TTL override in seconds. Use 0 to skip caching, false for forever. */
   revalidate?: RevalidateValue;
-};
+}
 
 /** Async function that renders a page for a given request. */
 export type RenderFunction = (request: Request) => Promise<RenderResult | Response>;

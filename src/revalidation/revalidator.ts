@@ -98,7 +98,7 @@ export async function revalidate(options: {
   }
 }
 
-export interface Revalidator {
+interface Revalidator {
   revalidatePath(path: string | URL): Promise<void>;
   revalidateTag(tag: string): Promise<void>;
 }
@@ -112,13 +112,13 @@ async function runWithConcurrency<T>(
   logger?: Logger,
 ): Promise<void> {
   if (items.length === 0) return;
-  const queue = items.slice();
+  let i = 0;
   const errors: unknown[] = [];
   const workers = Array.from(
-    { length: Math.min(limit, queue.length) },
+    { length: Math.min(limit, items.length) },
     async () => {
-      while (queue.length > 0) {
-        const item = queue.shift() as T;
+      while (i < items.length) {
+        const item = items[i++]!;
         try {
           await fn(item);
         } catch (error) {
@@ -156,16 +156,16 @@ export function createRevalidator(options: {
     async revalidateTag(tag: string): Promise<void> {
       const keys = await options.storage.tagIndex.getKeysByTag(tag);
 
-      // Delete cache entries in parallel (concurrency-limited).
-      await runWithConcurrency(
-        keys,
-        MAX_PARALLEL_INVALIDATIONS,
-        (key) => options.storage.cache.delete(key),
-        logger,
-      );
-
-      // Bulk-remove all tag mappings in a single DO call.
-      await options.storage.tagIndex.removeAllKeysForTag(tag);
+      // Delete cache entries and remove tag mappings in parallel.
+      await Promise.all([
+        runWithConcurrency(
+          keys,
+          MAX_PARALLEL_INVALIDATIONS,
+          (key) => options.storage.cache.delete(key),
+          logger,
+        ),
+        options.storage.tagIndex.removeAllKeysForTag(tag),
+      ]);
     },
   };
 }

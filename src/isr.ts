@@ -23,12 +23,14 @@ import {
   updateTagIndexSafely,
 } from "./utils.ts";
 import { createWorkersStorage } from "./storage/workers.ts";
+import { TagIndexDOClient } from "./revalidation/tag-index.ts";
 
 function resolveStorage(options: ISROptions): ISRStorage {
   if ("kv" in options && options.kv) {
+    const tagIndex = new TagIndexDOClient(options.tagIndex);
     return createWorkersStorage({
       kv: options.kv,
-      tagIndexBinding: options.tagIndex,
+      tagIndex,
       cacheName: options.cacheName,
       logger: options.logger,
     });
@@ -37,21 +39,30 @@ function resolveStorage(options: ISROptions): ISRStorage {
 }
 
 /**
- * Build an HTTP Response from a CacheEntry and a cache status label.
+ * Build an HTTP Response from a body/status/headers shape and a cache status label.
  */
-function buildCachedResponse(
-  entry: CacheEntry,
-  status: CacheStatus,
+function buildResponse(
+  source: CacheEntry | RenderResult,
+  cacheStatus: CacheStatus,
   logger?: Logger,
+  noStore = false,
 ): Response {
-  const headers = new Headers(sanitizeHeaders(entry.headers, logger));
-  headers.set("X-ISR-Status", status);
-  headers.set("X-ISR-Cache-Date", new Date(entry.metadata.createdAt).toUTCString());
+  const isCacheEntry = "metadata" in source;
+  const body = source.body;
+  const status = isCacheEntry ? source.metadata.status : source.status;
+  const rawHeaders = isCacheEntry ? source.headers : (source.headers ?? {});
 
-  return new Response(entry.body, {
-    status: entry.metadata.status,
-    headers,
-  });
+  const headers = new Headers(sanitizeHeaders(rawHeaders, logger));
+  headers.set("X-ISR-Status", cacheStatus);
+
+  if (isCacheEntry) {
+    headers.set("X-ISR-Cache-Date", new Date(source.metadata.createdAt).toUTCString());
+  }
+  if (noStore) {
+    headers.set("Cache-Control", "no-store");
+  }
+
+  return new Response(body, { status, headers });
 }
 
 /**
@@ -71,22 +82,6 @@ export function createISR(options: ISROptions): ISRInstance {
     cacheKey,
     logger,
   });
-
-  function buildRenderResponse(
-    result: RenderResult,
-    status: CacheStatus,
-    setNoStore = false,
-  ): Response {
-    const headers = new Headers(sanitizeHeaders(result.headers ?? {}, logger));
-    headers.set("X-ISR-Status", status);
-    if (setNoStore) {
-      headers.set("Cache-Control", "no-store");
-    }
-    return new Response(result.body, {
-      status: result.status,
-      headers,
-    });
-  }
 
   function ensureRender(): NonNullable<ISROptions["render"]> {
     if (!options.render) {
@@ -133,7 +128,7 @@ export function createISR(options: ISROptions): ISRInstance {
       // Bypass mode — render fresh, skip cache entirely.
       if (isBypass(request, options.bypassToken)) {
         const result = await toRenderResult(await render(request));
-        return buildRenderResponse(result, "BYPASS", true);
+        return buildResponse(result, "BYPASS", logger, true);
       }
 
       const routeRevalidate = resolveRevalidate({
@@ -148,20 +143,20 @@ export function createISR(options: ISROptions): ISRInstance {
             logWarn(logger, "Failed to delete cache entry:", error);
           }),
         );
-        return buildRenderResponse(result, "SKIP", true);
+        return buildResponse(result, "SKIP", logger, true);
       }
 
       const cached = await safeCacheGet({ get: () => cache.get(key), logger });
 
       // HIT — serve directly from cache.
       if (cached.status === "HIT" && cached.entry) {
-        return buildCachedResponse(cached.entry, "HIT", logger);
+        return buildResponse(cached.entry, "HIT", logger);
       }
 
       // STALE — serve stale response immediately, revalidate in the background.
       if (cached.status === "STALE" && cached.entry) {
         if (isForever(routeRevalidate)) {
-          return buildCachedResponse(cached.entry, "HIT", logger);
+          return buildResponse(cached.entry, "HIT", logger);
         }
         ctx.waitUntil(
           revalidate({
@@ -178,7 +173,7 @@ export function createISR(options: ISROptions): ISRInstance {
             logWarn(logger, "Background revalidation failed:", error);
           }),
         );
-        return buildCachedResponse(cached.entry, "STALE", logger);
+        return buildResponse(cached.entry, "STALE", logger);
       }
 
       // MISS — render synchronously (blocking).
@@ -196,7 +191,7 @@ export function createISR(options: ISROptions): ISRInstance {
             logWarn(logger, "Failed to delete cache entry:", error);
           }),
         );
-        return buildRenderResponse(result, "SKIP", true);
+        return buildResponse(result, "SKIP", logger, true);
       }
 
       const now = Date.now();
@@ -223,7 +218,7 @@ export function createISR(options: ISROptions): ISRInstance {
         }),
       );
 
-      return buildCachedResponse(entry, "MISS", logger);
+      return buildResponse(entry, "MISS", logger);
     },
     revalidatePath: revalidator.revalidatePath,
     revalidateTag: revalidator.revalidateTag,
