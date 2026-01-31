@@ -1,6 +1,7 @@
 # cloudflare-isr
 
-> **!WARN: This project is a work in progress.** APIs are unstable and will change without notice.
+> [!WARNING]
+> This project is a work in progress. APIs are unstable and will change without notice.
 
 Framework-agnostic Incremental Static Regeneration (ISR) for Cloudflare Workers.
 
