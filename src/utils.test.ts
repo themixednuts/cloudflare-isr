@@ -1,0 +1,348 @@
+import { describe, it, expect, vi } from "vitest";
+import {
+  toRenderResult,
+  sanitizeHeaders,
+  normalizeTags,
+  resolveRevalidate,
+  isNoStore,
+  isForever,
+  revalidateAfter,
+  determineCacheStatus,
+  safeCacheGet,
+  applyCacheControl,
+  createCacheEntryMetadata,
+  createCacheEntry,
+  updateTagIndexSafely,
+  DEFAULT_REVALIDATE,
+} from "./utils.ts";
+import type { RenderResult } from "./types.ts";
+
+describe("toRenderResult", () => {
+  it("passes through a RenderResult unchanged", async () => {
+    const input: RenderResult = {
+      body: "<html>hi</html>",
+      status: 200,
+      headers: { "content-type": "text/html" },
+      tags: ["a"],
+      revalidate: 60,
+    };
+    const result = await toRenderResult(input);
+    expect(result).toBe(input);
+  });
+
+  it("converts a Response to a RenderResult", async () => {
+    const response = new Response("<html>hello</html>", {
+      status: 201,
+      headers: { "content-type": "text/html", "x-custom": "yes" },
+    });
+    const result = await toRenderResult(response);
+    expect(result.body).toBe("<html>hello</html>");
+    expect(result.status).toBe(201);
+    expect(result.headers).toMatchObject({
+      "content-type": "text/html",
+      "x-custom": "yes",
+    });
+    expect(result.revalidate).toBeUndefined();
+    expect(result.tags).toBeUndefined();
+  });
+});
+
+describe("sanitizeHeaders", () => {
+  it("passes through valid headers", () => {
+    const result = sanitizeHeaders({ "content-type": "text/html", "x-foo": "bar" });
+    expect(result).toMatchObject({ "content-type": "text/html", "x-foo": "bar" });
+  });
+
+  it("drops headers with undefined values", () => {
+    const input = { "x-good": "yes", "x-bad": undefined as unknown as string };
+    const result = sanitizeHeaders(input);
+    expect(result["x-good"]).toBe("yes");
+    expect(Object.keys(result)).not.toContain("x-bad");
+  });
+
+  it("drops invalid headers and logs a warning", () => {
+    const warn = vi.fn();
+    const logger = { warn };
+    const result = sanitizeHeaders({ "invalid\nheader": "value" }, logger);
+    expect(Object.keys(result)).not.toContain("invalid\nheader");
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("normalizeTags", () => {
+  it("returns empty array for undefined", () => {
+    expect(normalizeTags(undefined)).toEqual([]);
+  });
+
+  it("returns empty array for empty array", () => {
+    expect(normalizeTags([])).toEqual([]);
+  });
+
+  it("deduplicates tags", () => {
+    expect(normalizeTags(["a", "b", "a"])).toEqual(["a", "b"]);
+  });
+
+  it("trims whitespace", () => {
+    expect(normalizeTags(["  a ", " b"])).toEqual(["a", "b"]);
+  });
+
+  it("filters empty strings", () => {
+    expect(normalizeTags(["a", "", "  ", "b"])).toEqual(["a", "b"]);
+  });
+});
+
+describe("resolveRevalidate", () => {
+  it("prefers render value", () => {
+    expect(resolveRevalidate({ render: 10, route: 20, defaultValue: 30 })).toBe(10);
+  });
+
+  it("falls back to route value", () => {
+    expect(resolveRevalidate({ route: 20, defaultValue: 30 })).toBe(20);
+  });
+
+  it("falls back to default value", () => {
+    expect(resolveRevalidate({ defaultValue: 30 })).toBe(30);
+  });
+
+  it("falls back to DEFAULT_REVALIDATE when nothing provided", () => {
+    expect(resolveRevalidate({})).toBe(DEFAULT_REVALIDATE);
+  });
+
+  it("accepts false (forever) from render", () => {
+    expect(resolveRevalidate({ render: false })).toBe(false);
+  });
+
+  it("accepts 0 (no-store) from render", () => {
+    expect(resolveRevalidate({ render: 0 })).toBe(0);
+  });
+});
+
+describe("isNoStore", () => {
+  it("returns true for 0", () => {
+    expect(isNoStore(0)).toBe(true);
+  });
+
+  it("returns true for negative numbers", () => {
+    expect(isNoStore(-1)).toBe(true);
+  });
+
+  it("returns false for positive numbers", () => {
+    expect(isNoStore(60)).toBe(false);
+  });
+
+  it("returns false for false (forever)", () => {
+    expect(isNoStore(false)).toBe(false);
+  });
+});
+
+describe("isForever", () => {
+  it("returns true for false", () => {
+    expect(isForever(false)).toBe(true);
+  });
+
+  it("returns false for numbers", () => {
+    expect(isForever(0)).toBe(false);
+    expect(isForever(60)).toBe(false);
+  });
+});
+
+describe("revalidateAfter", () => {
+  it("returns null for forever (false)", () => {
+    expect(revalidateAfter(false, 1000)).toBeNull();
+  });
+
+  it("returns now + seconds * 1000 for numeric values", () => {
+    const now = 1000000;
+    expect(revalidateAfter(60, now)).toBe(now + 60_000);
+  });
+});
+
+describe("determineCacheStatus", () => {
+  it("returns HIT when revalidateAfter is null (forever)", () => {
+    expect(determineCacheStatus(null, Date.now())).toBe("HIT");
+  });
+
+  it("returns HIT when now is before revalidateAfter", () => {
+    const future = Date.now() + 60_000;
+    expect(determineCacheStatus(future, Date.now())).toBe("HIT");
+  });
+
+  it("returns STALE when now is after revalidateAfter", () => {
+    const past = Date.now() - 1;
+    expect(determineCacheStatus(past, Date.now())).toBe("STALE");
+  });
+});
+
+describe("safeCacheGet", () => {
+  it("returns the cache result on success", async () => {
+    const entry = { entry: null as null, status: "MISS" as const };
+    const result = await safeCacheGet({ get: () => Promise.resolve(entry) });
+    expect(result).toBe(entry);
+  });
+
+  it("returns MISS on error and logs warning", async () => {
+    const warn = vi.fn();
+    const result = await safeCacheGet({
+      get: () => Promise.reject(new Error("broken")),
+      logger: { warn },
+    });
+    expect(result).toEqual({ entry: null, status: "MISS" });
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("uses custom label in error message", async () => {
+    const warn = vi.fn();
+    await safeCacheGet({
+      get: () => Promise.reject(new Error("fail")),
+      logger: { warn },
+      label: "L1",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("L1"),
+      expect.any(Error),
+    );
+  });
+});
+
+describe("applyCacheControl", () => {
+  it("generates immutable header for forever cache", () => {
+    const result = applyCacheControl({}, false);
+    expect(result["Cache-Control"]).toBe(
+      "public, max-age=0, s-maxage=31536000, immutable",
+    );
+  });
+
+  it("generates s-maxage + stale-while-revalidate for numeric TTL", () => {
+    const result = applyCacheControl({}, 120);
+    expect(result["Cache-Control"]).toBe(
+      "public, max-age=0, s-maxage=120, stale-while-revalidate=120",
+    );
+  });
+
+  it("does not override existing Cache-Control header", () => {
+    const result = applyCacheControl({ "Cache-Control": "private" }, 60);
+    expect(result["cache-control"]).toBe("private");
+  });
+
+  it("preserves other headers", () => {
+    const result = applyCacheControl({ "x-custom": "yes" }, 60);
+    expect(result["x-custom"]).toBe("yes");
+    expect(result["Cache-Control"]).toBeDefined();
+  });
+
+  it("floors negative TTL to 0", () => {
+    const result = applyCacheControl({}, -5);
+    expect(result["Cache-Control"]).toContain("s-maxage=0");
+  });
+});
+
+describe("createCacheEntryMetadata", () => {
+  it("builds metadata with correct fields", () => {
+    const now = 1000000;
+    const result: RenderResult = {
+      body: "hi",
+      status: 200,
+      tags: ["a", "b"],
+    };
+    const meta = createCacheEntryMetadata({
+      result,
+      revalidateSeconds: 60,
+      now,
+    });
+    expect(meta.createdAt).toBe(now);
+    expect(meta.revalidateAfter).toBe(now + 60_000);
+    expect(meta.status).toBe(200);
+    expect(meta.tags).toEqual(["a", "b"]);
+  });
+
+  it("uses routeConfig tags when result has no tags", () => {
+    const meta = createCacheEntryMetadata({
+      result: { body: "", status: 200 },
+      routeConfig: { tags: ["route-tag"] },
+      revalidateSeconds: 60,
+      now: 0,
+    });
+    expect(meta.tags).toEqual(["route-tag"]);
+  });
+
+  it("sets revalidateAfter to null for forever", () => {
+    const meta = createCacheEntryMetadata({
+      result: { body: "", status: 200 },
+      revalidateSeconds: false,
+      now: 0,
+    });
+    expect(meta.revalidateAfter).toBeNull();
+  });
+});
+
+describe("createCacheEntry", () => {
+  it("creates a full cache entry with body, headers, and metadata", () => {
+    const entry = createCacheEntry({
+      result: {
+        body: "<html>test</html>",
+        status: 200,
+        headers: { "content-type": "text/html" },
+        tags: ["t"],
+      },
+      revalidateSeconds: 60,
+      now: 1000000,
+    });
+    expect(entry.body).toBe("<html>test</html>");
+    expect(entry.headers["content-type"]).toBe("text/html");
+    expect(entry.headers["Cache-Control"]).toBeDefined();
+    expect(entry.metadata.status).toBe(200);
+    expect(entry.metadata.tags).toEqual(["t"]);
+  });
+});
+
+describe("updateTagIndexSafely", () => {
+  it("calls addKeyToTags when tags are present", async () => {
+    const tagIndex = {
+      addKeyToTags: vi.fn().mockResolvedValue(undefined),
+      addKeyToTag: vi.fn(),
+      getKeysByTag: vi.fn(),
+      removeKeyFromTag: vi.fn(),
+      removeAllKeysForTag: vi.fn(),
+    };
+    await updateTagIndexSafely({
+      tagIndex,
+      tags: ["a", "b"],
+      key: "/page",
+    });
+    expect(tagIndex.addKeyToTags).toHaveBeenCalledWith(["a", "b"], "/page");
+  });
+
+  it("skips when tags are empty", async () => {
+    const tagIndex = {
+      addKeyToTags: vi.fn(),
+      addKeyToTag: vi.fn(),
+      getKeysByTag: vi.fn(),
+      removeKeyFromTag: vi.fn(),
+      removeAllKeysForTag: vi.fn(),
+    };
+    await updateTagIndexSafely({
+      tagIndex,
+      tags: [],
+      key: "/page",
+    });
+    expect(tagIndex.addKeyToTags).not.toHaveBeenCalled();
+  });
+
+  it("logs warning on error instead of throwing", async () => {
+    const warn = vi.fn();
+    const tagIndex = {
+      addKeyToTags: vi.fn().mockRejectedValue(new Error("DO error")),
+      addKeyToTag: vi.fn(),
+      getKeysByTag: vi.fn(),
+      removeKeyFromTag: vi.fn(),
+      removeAllKeysForTag: vi.fn(),
+    };
+    await updateTagIndexSafely({
+      tagIndex,
+      tags: ["a"],
+      key: "/page",
+      logger: { warn },
+    });
+    expect(warn).toHaveBeenCalled();
+  });
+});
