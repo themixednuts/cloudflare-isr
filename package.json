@@ -11,10 +11,12 @@
     }
   },
   "files": ["dist"],
+  "workspaces": ["examples/*"],
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "bun run examples/isr-tests.ts",
     "cf:types": "wrangler types cloudflare.d.ts"
   },
   "devDependencies": {
