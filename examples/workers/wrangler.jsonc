@@ -1,0 +1,19 @@
+{
+  "name": "cloudflare-isr-do",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-12-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TAG_INDEX",
+        "class_name": "ISRTagIndexDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ISRTagIndexDO"]
+    }
+  ]
+}

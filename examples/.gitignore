@@ -1,0 +1,10 @@
+.wrangler/
+node_modules/
+dist/
+.output/
+.nuxt/
+.svelte-kit/
+.vinxi/
+*.d.ts.map
+bun.lockb
+bun.lock

@@ -1,0 +1,19 @@
+{
+  "name": "cloudflare-isr-nuxt-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "dev:cf": "wrangler dev -c ./wrangler.jsonc -c ../workers/wrangler.jsonc --persist-to ../.wrangler --port 8899",
+    "cf:types": "wrangler types -c ./wrangler.jsonc -c ../workers/wrangler.jsonc cloudflare.d.ts"
+  },
+  "dependencies": {
+    "cloudflare-isr": "file:../../"
+  },
+  "devDependencies": {
+    "nuxt": "^4.3.0",
+    "wrangler": "^4.61.1"
+  }
+}

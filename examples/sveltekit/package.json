@@ -1,0 +1,23 @@
+{
+  "name": "cloudflare-isr-sveltekit-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "dev:cf": "wrangler dev -c ./wrangler.jsonc -c ../workers/wrangler.jsonc --persist-to ../.wrangler --port 8899",
+    "cf:types": "wrangler types -c ./wrangler.jsonc -c ../workers/wrangler.jsonc src/cloudflare.d.ts"
+  },
+  "dependencies": {
+    "cloudflare-isr": "file:../../"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-cloudflare": "^7.2.6",
+    "@sveltejs/kit": "^2.50.1",
+    "svelte": "^5.49.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "wrangler": "^4.61.1"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "cloudflare-isr-do-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "cf:types": "wrangler types cloudflare.d.ts"
+  },
+  "dependencies": {
+    "cloudflare-isr": "file:../../"
+  },
+  "devDependencies": {
+    "wrangler": "^4.61.1"
+  }
+}
