@@ -30,10 +30,10 @@ export function isBypass(request: Request, bypassToken?: string): boolean {
 }
 
 function safeEqual(left: string, right: string): boolean {
-  if (left.length !== right.length) return false;
-  let diff = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  const maxLen = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < maxLen; i += 1) {
+    diff |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
   }
   return diff === 0;
 }
@@ -48,7 +48,7 @@ function getCookieValue(cookieHeader: string, name: string): string | null {
     try {
       return decodeURIComponent(rawValue);
     } catch {
-      return rawValue;
+      return null;
     }
   }
   return null;

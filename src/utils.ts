@@ -45,6 +45,29 @@ export function sanitizeHeaders(
   return Object.fromEntries(safe.entries());
 }
 
+/** Maximum number of tags allowed per cache entry. */
+export const MAX_TAG_COUNT = 64;
+/** Maximum character length of a single tag. */
+export const MAX_TAG_LENGTH = 128;
+/** Allowed characters in a tag: alphanumeric, hyphens, underscores, dots, colons, slashes. */
+const TAG_PATTERN = /^[a-zA-Z0-9_\-.:\/]+$/;
+
+export function validateTag(tag: string): void {
+  if (tag.length === 0) {
+    throw new Error("[ISR] Tag must not be empty.");
+  }
+  if (tag.length > MAX_TAG_LENGTH) {
+    throw new Error(
+      `[ISR] Tag exceeds maximum length of ${MAX_TAG_LENGTH} characters: "${tag.slice(0, 32)}..."`,
+    );
+  }
+  if (!TAG_PATTERN.test(tag)) {
+    throw new Error(
+      `[ISR] Tag contains invalid characters (allowed: a-z, A-Z, 0-9, _ - . : /): "${tag}"`,
+    );
+  }
+}
+
 export function normalizeTags(tags: readonly string[] | undefined): string[] {
   if (!tags || tags.length === 0) return [];
   const normalized: string[] = [];
@@ -52,8 +75,14 @@ export function normalizeTags(tags: readonly string[] | undefined): string[] {
   for (const raw of tags) {
     const tag = raw.trim();
     if (!tag || seen.has(tag)) continue;
+    validateTag(tag);
     seen.add(tag);
     normalized.push(tag);
+  }
+  if (normalized.length > MAX_TAG_COUNT) {
+    throw new Error(
+      `[ISR] Too many tags: ${normalized.length} exceeds maximum of ${MAX_TAG_COUNT}.`,
+    );
   }
   return normalized;
 }
@@ -124,8 +153,19 @@ export function applyCacheControl(
   logger?: Logger,
 ): Record<string, string> {
   const safeHeaders = sanitizeHeaders(headers, logger);
+
+  // ISR must always control Cache-Control. If the render function set one, warn and override it.
   if (hasHeader(safeHeaders, "cache-control")) {
-    return safeHeaders;
+    logWarn(
+      logger,
+      "Render response contained a Cache-Control header which was overridden by ISR.",
+    );
+    // Remove the original Cache-Control (case-insensitive)
+    for (const key of Object.keys(safeHeaders)) {
+      if (key.toLowerCase() === "cache-control") {
+        delete safeHeaders[key];
+      }
+    }
   }
 
   if (revalidateSeconds === false) {
@@ -142,19 +182,69 @@ export function applyCacheControl(
   };
 }
 
+/** Maximum bytes for KV metadata field. */
+export const KV_METADATA_MAX_BYTES = 1024;
+
+/**
+ * Fit tags into the KV metadata size limit by greedily dropping trailing tags.
+ * Returns the original array when it fits, or a truncated copy when it doesn't.
+ */
+export function fitMetadataTags(
+  metadata: CacheEntryMetadata,
+  logger?: Logger,
+): readonly string[] {
+  const serialized = JSON.stringify(metadata);
+  const byteLength = new TextEncoder().encode(serialized).byteLength;
+  if (byteLength <= KV_METADATA_MAX_BYTES) {
+    return metadata.tags;
+  }
+
+  const baseMeta: CacheEntryMetadata = { ...metadata, tags: [] };
+  const baseBytes = new TextEncoder().encode(JSON.stringify(baseMeta)).byteLength;
+
+  const fittedTags: string[] = [];
+  for (const tag of metadata.tags) {
+    const candidate = [...fittedTags, tag];
+    const candidateMeta = { ...metadata, tags: candidate };
+    const candidateBytes = new TextEncoder().encode(
+      JSON.stringify(candidateMeta),
+    ).byteLength;
+    if (candidateBytes > KV_METADATA_MAX_BYTES) {
+      break;
+    }
+    fittedTags.push(tag);
+  }
+
+  logWarn(
+    logger,
+    `KV metadata exceeds ${KV_METADATA_MAX_BYTES} bytes (${byteLength}B), ` +
+      `truncated tags from ${metadata.tags.length} to ${fittedTags.length}`,
+  );
+
+  return fittedTags;
+}
+
 export function createCacheEntryMetadata(options: {
   result: RenderResult;
   routeConfig?: RouteConfig;
   revalidateSeconds: RevalidateValue;
   now: number;
+  logger?: Logger;
 }): CacheEntryMetadata {
-  const { result, routeConfig, revalidateSeconds, now } = options;
-  return {
+  const { result, routeConfig, revalidateSeconds, now, logger } = options;
+  const rawTags = normalizeTags(result.tags ?? routeConfig?.tags);
+  const metadata: CacheEntryMetadata = {
     createdAt: now,
     revalidateAfter: revalidateAfter(revalidateSeconds, now),
     status: result.status,
-    tags: normalizeTags(result.tags ?? routeConfig?.tags),
+    tags: rawTags,
   };
+  // Pre-truncate tags to fit KV metadata limit so tag index stays in sync.
+  const fittedTags = fitMetadataTags(metadata, logger);
+  if (fittedTags !== rawTags) {
+    return { ...metadata, tags: fittedTags };
+  }
+  return metadata;
 }
 
 export function createCacheEntry(options: {

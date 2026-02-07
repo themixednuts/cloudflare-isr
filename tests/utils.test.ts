@@ -3,6 +3,7 @@ import {
   toRenderResult,
   sanitizeHeaders,
   normalizeTags,
+  validateTag,
   resolveRevalidate,
   isNoStore,
   isForever,
@@ -14,8 +15,10 @@ import {
   createCacheEntry,
   updateTagIndexSafely,
   DEFAULT_REVALIDATE,
-} from "./utils.ts";
-import type { RenderResult } from "./types.ts";
+  MAX_TAG_COUNT,
+  MAX_TAG_LENGTH,
+} from "../src/utils.ts";
+import type { RenderResult } from "../src/types.ts";
 
 describe("toRenderResult", () => {
   it("passes through a RenderResult unchanged", async () => {
@@ -88,6 +91,64 @@ describe("normalizeTags", () => {
 
   it("filters empty strings", () => {
     expect(normalizeTags(["a", "", "  ", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("accepts valid tag characters (alphanumeric, _ - . : /)", () => {
+    expect(normalizeTags(["blog:post", "v1.0", "a/b/c", "my-tag", "under_score"])).toEqual([
+      "blog:post", "v1.0", "a/b/c", "my-tag", "under_score",
+    ]);
+  });
+
+  it("throws on tags with invalid characters", () => {
+    expect(() => normalizeTags(["valid", "inv@lid"])).toThrow("invalid characters");
+  });
+
+  it("throws on tags with spaces (after trim yields inner space)", () => {
+    expect(() => normalizeTags(["has space"])).toThrow("invalid characters");
+  });
+
+  it("throws when tag exceeds max length", () => {
+    const longTag = "a".repeat(MAX_TAG_LENGTH + 1);
+    expect(() => normalizeTags([longTag])).toThrow("maximum length");
+  });
+
+  it("accepts tag at exactly max length", () => {
+    const tag = "a".repeat(MAX_TAG_LENGTH);
+    expect(normalizeTags([tag])).toEqual([tag]);
+  });
+
+  it("throws when tag count exceeds max", () => {
+    const tags = Array.from({ length: MAX_TAG_COUNT + 1 }, (_, i) => `tag${i}`);
+    expect(() => normalizeTags(tags)).toThrow("Too many tags");
+  });
+
+  it("accepts exactly max tag count", () => {
+    const tags = Array.from({ length: MAX_TAG_COUNT }, (_, i) => `tag${i}`);
+    expect(normalizeTags(tags)).toHaveLength(MAX_TAG_COUNT);
+  });
+});
+
+describe("validateTag", () => {
+  it("accepts valid tags", () => {
+    expect(() => validateTag("blog")).not.toThrow();
+    expect(() => validateTag("my-tag")).not.toThrow();
+    expect(() => validateTag("path/to/thing")).not.toThrow();
+    expect(() => validateTag("v1.2.3")).not.toThrow();
+    expect(() => validateTag("ns:tag")).not.toThrow();
+  });
+
+  it("throws on empty string", () => {
+    expect(() => validateTag("")).toThrow("must not be empty");
+  });
+
+  it("throws on invalid characters", () => {
+    expect(() => validateTag("tag with space")).toThrow("invalid characters");
+    expect(() => validateTag("tag@bad")).toThrow("invalid characters");
+    expect(() => validateTag("tag#bad")).toThrow("invalid characters");
+  });
+
+  it("throws on tag exceeding max length", () => {
+    expect(() => validateTag("x".repeat(MAX_TAG_LENGTH + 1))).toThrow("maximum length");
   });
 });
 
@@ -219,9 +280,31 @@ describe("applyCacheControl", () => {
     );
   });
 
-  it("does not override existing Cache-Control header", () => {
-    const result = applyCacheControl({ "Cache-Control": "private" }, 60);
-    expect(result["cache-control"]).toBe("private");
+  it("overrides existing Cache-Control header and logs warning", () => {
+    const warn = vi.fn();
+    const result = applyCacheControl({ "Cache-Control": "private" }, 60, { warn });
+    expect(result["Cache-Control"]).toBe(
+      "public, max-age=0, s-maxage=60, stale-while-revalidate=60",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("overridden by ISR"),
+    );
+  });
+
+  it("overrides case-insensitive Cache-Control header", () => {
+    const warn = vi.fn();
+    const result = applyCacheControl({ "cache-control": "no-store" }, false, { warn });
+    expect(result["Cache-Control"]).toBe(
+      "public, max-age=0, s-maxage=31536000, immutable",
+    );
+    expect(result).not.toHaveProperty("cache-control");
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("does not warn when no existing Cache-Control", () => {
+    const warn = vi.fn();
+    applyCacheControl({}, 60, { warn });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("preserves other headers", () => {

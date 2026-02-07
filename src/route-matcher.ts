@@ -11,6 +11,8 @@ interface CompiledRoute {
   regex: RegExp;
 }
 
+const MAX_PATTERN_LENGTH = 512;
+
 const compiledRoutesCache = new WeakMap<object, CompiledRoute[]>();
 
 function getCompiledRoutes(
@@ -25,6 +27,21 @@ function getCompiledRoutes(
   }));
   compiledRoutesCache.set(routes, compiled);
   return compiled;
+}
+
+function validatePattern(pattern: string): void {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new Error(
+      `Route pattern exceeds maximum length of ${MAX_PATTERN_LENGTH}: ${pattern.slice(0, 60)}...`,
+    );
+  }
+
+  const catchAllMatches = pattern.match(/\[\.\.\./g);
+  if (catchAllMatches && catchAllMatches.length > 1) {
+    throw new Error(
+      `Route pattern must not contain multiple catch-all segments: ${pattern}`,
+    );
+  }
 }
 
 /**
@@ -54,6 +71,7 @@ export function matchRoute(
 }
 
 function patternToRegex(pattern: string): RegExp {
+  validatePattern(pattern);
   let result = "";
   let i = 0;
 
