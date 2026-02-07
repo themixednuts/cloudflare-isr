@@ -1,9 +1,7 @@
 import type { PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
-  // Opt this route into ISR
-  locals.isr.set({ revalidate: 60, tags: ["home"] });
-
+  // No isr.set() needed — layout defaults apply automatically.
   return {
     generatedAt: new Date().toISOString(),
   };

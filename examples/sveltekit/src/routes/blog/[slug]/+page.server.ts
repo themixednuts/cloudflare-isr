@@ -13,7 +13,10 @@ const posts: Record<string, { title: string; content: string }> = {
   },
 };
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, locals }) => {
+  // Opt this route into ISR
+  locals.isr.set({ revalidate: 120, tags: ["blog"] });
+
   const post = posts[params.slug];
   if (!post) {
     error(404, "Post not found");

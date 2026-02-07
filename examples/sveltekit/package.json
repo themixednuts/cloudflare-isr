@@ -6,8 +6,10 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "dev:cf": "wrangler dev -c ./wrangler.jsonc -c ../workers/wrangler.jsonc --persist-to ../.wrangler --port 8899",
-    "cf:types": "wrangler types -c ./wrangler.jsonc -c ../workers/wrangler.jsonc src/cloudflare.d.ts"
+    "cf:clean": "node -e \"const fs=require('fs');['../.wrangler','.svelte-kit/cloudflare'].forEach(d=>{try{fs.rmSync(d,{recursive:true,force:true})}catch{}})\"",
+    "cf:dev": "bun run cf:clean && bun run --cwd ../.. build && bun install --cwd ../.. && vite build && wrangler dev -c ./wrangler.jsonc -c ../workers/wrangler.jsonc --persist-to ../.wrangler --port 8899",
+    "cf:types": "wrangler types -c ./wrangler.jsonc -c ../workers/wrangler.jsonc src/cloudflare.d.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "cloudflare-isr": "file:../../"
