@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createL1CacheApi } from "./l1-cache-api.ts";
-import { cacheApiUrl } from "../keys.ts";
-import type { CacheEntry } from "../types.ts";
+import { createL1CacheApi } from "../../src/cache/l1-cache-api.ts";
+import { cacheApiUrl } from "../../src/keys.ts";
+import type { CacheEntry } from "../../src/types.ts";
 
 describe("createL1CacheApi", () => {
   const CACHE_NAME = "test-l1";
@@ -95,6 +95,29 @@ describe("createL1CacheApi", () => {
     expect(result.status).toBe("STALE");
     expect(result.entry).not.toBeNull();
     expect(result.entry!.body).toBe("<html>stale</html>");
+  });
+
+  it("uses Math.ceil for TTL with minimum 1 second", async () => {
+    const l1 = createL1CacheApi(CACHE_NAME);
+    const now = Date.now();
+    const entry: CacheEntry = {
+      body: "<html>short-ttl</html>",
+      headers: { "content-type": "text/html" },
+      metadata: {
+        createdAt: now,
+        revalidateAfter: now + 500, // 500ms remaining = 0.5s
+        status: 200,
+        tags: [],
+      },
+    };
+
+    // With Math.ceil, 500ms should round up to 1s (and min is 1), so the entry survives
+    await l1.put("/page", entry);
+    const result = await l1.get("/page");
+
+    // Entry should be retrievable (not evicted by s-maxage=0)
+    expect(result.entry).not.toBeNull();
+    expect(result.entry!.body).toBe("<html>short-ttl</html>");
   });
 
   it("delete removes the entry", async () => {

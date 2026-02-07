@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTwoTierCache } from "./two-tier-cache.ts";
-import type { CacheEntry, CacheLayer, CacheLayerResult } from "../types.ts";
+import { createTwoTierCache } from "../../src/cache/two-tier-cache.ts";
+import type { CacheEntry, CacheLayer, CacheLayerResult } from "../../src/types.ts";
 
 function makeMockLayer(overrides?: Partial<CacheLayer>): CacheLayer {
   return {

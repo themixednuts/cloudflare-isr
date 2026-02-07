@@ -37,8 +37,8 @@ export function createL1CacheApi(cacheName: string): CacheLayer {
         entry.metadata.revalidateAfter === null
           ? FOREVER_TTL_SECONDS
           : Math.max(
-              0,
-              Math.floor((entry.metadata.revalidateAfter - Date.now()) / 1000),
+              1,
+              Math.ceil((entry.metadata.revalidateAfter - Date.now()) / 1000),
             );
 
       const response = new Response(JSON.stringify(entry), {

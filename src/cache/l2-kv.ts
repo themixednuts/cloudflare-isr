@@ -5,7 +5,9 @@ import type {
   CacheLayerResult,
 } from "../types.ts";
 import { pageKey, type StorageKey } from "../keys.ts";
-import { determineCacheStatus } from "../utils.ts";
+import { determineCacheStatus, fitMetadataTags } from "../utils.ts";
+import { logWarn } from "../logger.ts";
+import type { Logger } from "../types.ts";
 
 /**
  * Shape stored as the KV text value. Body and headers live here so that
@@ -31,6 +33,7 @@ interface KvValue {
  */
 export function createL2Kv<KVKey extends string = StorageKey>(
   kv: KVNamespace<KVKey>,
+  logger?: Logger,
 ): CacheLayer {
   return {
     async get(path: string): Promise<CacheLayerResult> {
@@ -48,6 +51,18 @@ export function createL2Kv<KVKey extends string = StorageKey>(
       try {
         const parsed = JSON.parse(value) as KvValue;
         if (typeof parsed === "object" && parsed !== null && "body" in parsed) {
+          if (typeof parsed.body !== "string") {
+            logWarn(logger, "KV entry has non-string body, treating as cache miss");
+            return { entry: null, status: "MISS" };
+          }
+          if (
+            parsed.headers !== undefined &&
+            parsed.headers !== null &&
+            (typeof parsed.headers !== "object" || Array.isArray(parsed.headers))
+          ) {
+            logWarn(logger, "KV entry has invalid headers, treating as cache miss");
+            return { entry: null, status: "MISS" };
+          }
           body = parsed.body;
           headers = parsed.headers ?? {};
         } else {
@@ -71,7 +86,13 @@ export function createL2Kv<KVKey extends string = StorageKey>(
     async put(path: string, entry: CacheEntry): Promise<void> {
       const key = pageKey(path) as KVKey;
       const kvValue: KvValue = { body: entry.body, headers: entry.headers };
-      await kv.put(key, JSON.stringify(kvValue), { metadata: entry.metadata });
+      // Tags should already be pre-truncated by createCacheEntry, but apply
+      // fitMetadataTags as a safety net to ensure KV metadata stays < 1024B.
+      const fittedTags = fitMetadataTags(entry.metadata, logger);
+      const metadata = fittedTags !== entry.metadata.tags
+        ? { ...entry.metadata, tags: fittedTags }
+        : entry.metadata;
+      await kv.put(key, JSON.stringify(kvValue), { metadata });
     },
 
     async delete(path: string): Promise<void> {
