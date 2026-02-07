@@ -51,13 +51,35 @@ export class TagIndexDOClient<
     return this.ns.get(this.ns.idFromName(this.doName));
   }
 
+  /** Assert the DO response is OK, throwing a helpful error if not. */
+  private async assertOk(res: Response, operation: string): Promise<void> {
+    if (res.ok) return;
+    if (res.status === 404) {
+      await res.body?.cancel();
+      throw new Error(
+        `TagIndexDO ${operation} failed: 404 — Durable Object not found. ` +
+          "Ensure ISRTagIndexDO is exported from your worker entry point " +
+          "and configured in wrangler.toml/wrangler.jsonc.",
+      );
+    }
+    const body = await res.text().catch(() => "");
+    if (res.status === 500) {
+      throw new Error(
+        `TagIndexDO ${operation} failed: 500 — ${body || "Internal error"}`,
+      );
+    }
+    throw new Error(
+      `TagIndexDO ${operation} failed: ${res.status}${body ? ` — ${body}` : ""}`,
+    );
+  }
+
   async addKeyToTag(tag: string, cacheKey: string): Promise<void> {
     const res = await this.stub().fetch("http://do/add", {
       method: "POST",
       body: JSON.stringify({ tag, key: cacheKey }),
       headers: { "Content-Type": "application/json" },
     });
-    if (!res.ok) throw new Error(`TagIndexDO add failed: ${res.status}`);
+    await this.assertOk(res, "add");
     await res.body?.cancel();
   }
 
@@ -69,7 +91,7 @@ export class TagIndexDOClient<
       body: JSON.stringify({ tags, key: cacheKey }),
       headers: { "Content-Type": "application/json" },
     });
-    if (!res.ok) throw new Error(`TagIndexDO add-bulk failed: ${res.status}`);
+    await this.assertOk(res, "add-bulk");
     await res.body?.cancel();
   }
 
@@ -77,7 +99,7 @@ export class TagIndexDOClient<
     const res = await this.stub().fetch(
       `http://do/get?tag=${encodeURIComponent(tag)}`,
     );
-    if (!res.ok) throw new Error(`TagIndexDO get failed: ${res.status}`);
+    await this.assertOk(res, "get");
     return res.json<string[]>();
   }
 
@@ -87,7 +109,7 @@ export class TagIndexDOClient<
       body: JSON.stringify({ tag, key: cacheKey }),
       headers: { "Content-Type": "application/json" },
     });
-    if (!res.ok) throw new Error(`TagIndexDO remove failed: ${res.status}`);
+    await this.assertOk(res, "remove");
     await res.body?.cancel();
   }
 
@@ -97,7 +119,7 @@ export class TagIndexDOClient<
       body: JSON.stringify({ tag }),
       headers: { "Content-Type": "application/json" },
     });
-    if (!res.ok) throw new Error(`TagIndexDO remove-tag failed: ${res.status}`);
+    await this.assertOk(res, "remove-tag");
     await res.body?.cancel();
   }
 }

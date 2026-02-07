@@ -1,5 +1,50 @@
 import { DurableObject } from "cloudflare:workers";
 
+/** Maximum allowed length for tag or key inputs in the DO. */
+const MAX_INPUT_LENGTH = 2048;
+
+/** Maximum number of tags allowed in a single /add-bulk request. */
+const MAX_BULK_TAGS = 64;
+
+/** Thrown for client input validation failures (→ 400). */
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+function assertNonEmpty(value: string, label: string): void {
+  if (!value || value.length === 0) {
+    throw new ValidationError(`${label} must not be empty`);
+  }
+}
+
+function assertLength(value: string, label: string): void {
+  if (value.length > MAX_INPUT_LENGTH) {
+    throw new ValidationError(
+      `${label} exceeds maximum length of ${MAX_INPUT_LENGTH}`,
+    );
+  }
+}
+
+function validateInput(value: string, label: string): void {
+  assertNonEmpty(value, label);
+  assertLength(value, label);
+}
+
+/**
+ * Safely parse a JSON body, throwing a {@link ValidationError} on failure
+ * so the caller can distinguish bad input from internal errors.
+ */
+async function parseJsonBody<T>(request: Request): Promise<T> {
+  try {
+    return await request.json<T>();
+  } catch {
+    throw new ValidationError("Invalid JSON body");
+  }
+}
+
 /**
  * Durable Object that stores a tag→keys reverse index in SQLite.
  *
@@ -32,65 +77,92 @@ export class ISRTagIndexDO extends DurableObject {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    switch (url.pathname) {
-      case "/add": {
-        const { tag, key } = await request.json<{
-          tag: string;
-          key: string;
-        }>();
-        this.sql.exec(
-          "INSERT OR IGNORE INTO tag_keys (tag, key) VALUES (?, ?)",
-          tag,
-          key,
-        );
-        return new Response("ok");
-      }
-
-      case "/add-bulk": {
-        const { tags, key } = await request.json<{
-          tags: string[];
-          key: string;
-        }>();
-        for (const tag of tags) {
+    try {
+      switch (url.pathname) {
+        case "/add": {
+          const { tag, key } = await parseJsonBody<{
+            tag: string;
+            key: string;
+          }>(request);
+          validateInput(tag, "tag");
+          validateInput(key, "key");
           this.sql.exec(
             "INSERT OR IGNORE INTO tag_keys (tag, key) VALUES (?, ?)",
             tag,
             key,
           );
+          return new Response("ok");
         }
-        return new Response("ok");
-      }
 
-      case "/get": {
-        const tag = url.searchParams.get("tag") ?? "";
-        const rows = this.sql
-          .exec("SELECT key FROM tag_keys WHERE tag = ?", tag)
-          .toArray();
-        const keys = rows.map((r) => r.key as string);
-        return Response.json(keys);
-      }
+        case "/add-bulk": {
+          const { tags, key } = await parseJsonBody<{
+            tags: string[];
+            key: string;
+          }>(request);
+          if (!Array.isArray(tags)) {
+            throw new ValidationError("tags must be an array");
+          }
+          if (tags.length > MAX_BULK_TAGS) {
+            throw new ValidationError(
+              `tags array exceeds maximum length of ${MAX_BULK_TAGS}`,
+            );
+          }
+          validateInput(key, "key");
+          for (const tag of tags) {
+            validateInput(tag, "tag");
+          }
+          for (const tag of tags) {
+            this.sql.exec(
+              "INSERT OR IGNORE INTO tag_keys (tag, key) VALUES (?, ?)",
+              tag,
+              key,
+            );
+          }
+          return new Response("ok");
+        }
 
-      case "/remove": {
-        const { tag, key } = await request.json<{
-          tag: string;
-          key: string;
-        }>();
-        this.sql.exec(
-          "DELETE FROM tag_keys WHERE tag = ? AND key = ?",
-          tag,
-          key,
-        );
-        return new Response("ok");
-      }
+        case "/get": {
+          const tag = url.searchParams.get("tag") ?? "";
+          validateInput(tag, "tag");
+          const rows = this.sql
+            .exec("SELECT key FROM tag_keys WHERE tag = ?", tag)
+            .toArray();
+          const keys = rows.map((r) => r.key as string);
+          return Response.json(keys);
+        }
 
-      case "/remove-tag": {
-        const { tag } = await request.json<{ tag: string }>();
-        this.sql.exec("DELETE FROM tag_keys WHERE tag = ?", tag);
-        return new Response("ok");
-      }
+        case "/remove": {
+          const { tag, key } = await parseJsonBody<{
+            tag: string;
+            key: string;
+          }>(request);
+          validateInput(tag, "tag");
+          validateInput(key, "key");
+          this.sql.exec(
+            "DELETE FROM tag_keys WHERE tag = ? AND key = ?",
+            tag,
+            key,
+          );
+          return new Response("ok");
+        }
 
-      default:
-        return new Response("Not Found", { status: 404 });
+        case "/remove-tag": {
+          const { tag } = await parseJsonBody<{ tag: string }>(request);
+          validateInput(tag, "tag");
+          this.sql.exec("DELETE FROM tag_keys WHERE tag = ?", tag);
+          return new Response("ok");
+        }
+
+        default:
+          return new Response("Not Found", { status: 404 });
+      }
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        return new Response(error.message, { status: 400 });
+      }
+      // Internal error — log full details but return generic message
+      console.error(`[ISRTagIndexDO] Error handling ${url.pathname}:`, error);
+      return new Response("Internal error", { status: 500 });
     }
   }
 }

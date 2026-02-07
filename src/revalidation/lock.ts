@@ -1,5 +1,6 @@
-import type { LockProvider } from "../types.ts";
+import type { LockProvider, Logger } from "../types.ts";
 import { lockKey, type StorageKey } from "../keys.ts";
+import { logWarn } from "../logger.ts";
 
 /**
  * Try to acquire a distributed lock for the given cache key.
@@ -17,6 +18,7 @@ import { lockKey, type StorageKey } from "../keys.ts";
 export async function acquireLock<KVKey extends string = StorageKey>(
   kv: KVNamespace<KVKey>,
   key: string,
+  logger?: Logger,
 ): Promise<AsyncDisposable | null> {
   const lock = lockKey(key) as KVKey;
   const existing = await kv.get(lock);
@@ -28,15 +30,21 @@ export async function acquireLock<KVKey extends string = StorageKey>(
   await kv.put(lock, Date.now().toString(), { expirationTtl: 60 });
   return {
     async [Symbol.asyncDispose]() {
-      await kv.delete(lock);
+      try {
+        await kv.delete(lock);
+      } catch (error) {
+        // Lock will expire via TTL (60s) — explicit delete is best-effort optimization
+        logWarn(logger, `Failed to release lock "${lock}":`, error);
+      }
     },
   };
 }
 
 export function createKvLock<KVKey extends string = StorageKey>(
   kv: KVNamespace<KVKey>,
+  logger?: Logger,
 ): LockProvider {
   return {
-    acquire: (key) => acquireLock(kv, key),
+    acquire: (key) => acquireLock(kv, key, logger),
   };
 }

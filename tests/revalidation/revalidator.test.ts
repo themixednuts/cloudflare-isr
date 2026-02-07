@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { MockedFunction } from "vitest";
 import { env } from "cloudflare:test";
-import { revalidate } from "./revalidator.ts";
-import { lockKey } from "../keys.ts";
-import { createKvLock } from "./lock.ts";
-import { TagIndexDOClient } from "./tag-index.ts";
-import type { CacheLayer, LockProvider, RenderFunction, RenderResult } from "../types.ts";
+import { revalidate } from "../../src/revalidation/revalidator.ts";
+import { lockKey } from "../../src/keys.ts";
+import { createKvLock } from "../../src/revalidation/lock.ts";
+import { TagIndexDOClient } from "../../src/revalidation/tag-index.ts";
+import type { CacheLayer, LockProvider, RenderFunction, RenderResult } from "../../src/types.ts";
 
 function makeMockCache(): CacheLayer {
   return {

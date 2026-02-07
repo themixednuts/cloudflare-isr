@@ -5,6 +5,7 @@ import type {
   LockProvider,
   Logger,
   RenderFunction,
+  RenderResult,
   RouteConfig,
 } from "../types.ts";
 import type { TagIndex } from "./tag-index.ts";
@@ -35,6 +36,7 @@ export async function revalidate(options: {
   defaultRevalidate?: RouteConfig["revalidate"];
   routeConfig?: RouteConfig;
   logger?: Logger;
+  renderTimeout?: number;
 }): Promise<void> {
   const {
     key,
@@ -46,6 +48,7 @@ export async function revalidate(options: {
     defaultRevalidate,
     routeConfig,
     logger,
+    renderTimeout,
   } = options;
 
   await using _lock = lock ? await lock.acquire(key) : null;
@@ -54,7 +57,21 @@ export async function revalidate(options: {
   }
 
   try {
-    const result = await toRenderResult(await render(request));
+    const renderPromise = render(request);
+    const result = await toRenderResult(
+      renderTimeout && renderTimeout > 0 && Number.isFinite(renderTimeout)
+        ? await new Promise<RenderResult | Response>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error(`[ISR] Background render timeout (${renderTimeout}ms)`)),
+              renderTimeout,
+            );
+            renderPromise.then(
+              (value) => { clearTimeout(timer); resolve(value); },
+              (error) => { clearTimeout(timer); reject(error); },
+            );
+          })
+        : await renderPromise,
+    );
 
     const revalidateSeconds = resolveRevalidate({
       render: result.revalidate,
