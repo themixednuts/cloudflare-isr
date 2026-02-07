@@ -22,9 +22,13 @@ const externals = [
 export default defineConfig({
   build: {
     lib: {
-      entry: path.join(rootDir, "src/index.ts"),
+      entry: {
+        index: path.join(rootDir, "src/index.ts"),
+        sveltekit: path.join(rootDir, "src/adapters/sveltekit.ts"),
+        nuxt: path.join(rootDir, "src/adapters/nuxt.ts"),
+        solidstart: path.join(rootDir, "src/adapters/solidstart.ts"),
+      },
       formats: ["es"],
-      fileName: () => "index.js",
     },
     outDir: "dist",
     emptyOutDir: true,

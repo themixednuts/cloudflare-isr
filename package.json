@@ -8,6 +8,18 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./sveltekit": {
+      "import": "./dist/sveltekit.js",
+      "types": "./dist/adapters/sveltekit.d.ts"
+    },
+    "./nuxt": {
+      "import": "./dist/nuxt.js",
+      "types": "./dist/adapters/nuxt.d.ts"
+    },
+    "./solidstart": {
+      "import": "./dist/solidstart.js",
+      "types": "./dist/adapters/solidstart.d.ts"
     }
   },
   "license": "MIT",
@@ -27,10 +39,31 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.8",
+    "@playwright/test": "^1.58.1",
+    "@solidjs/start": "^1.2.1",
+    "@sveltejs/kit": "^2.50.1",
     "@types/node": "^25.1.0",
+    "h3": "^1.15.5",
+    "nitropack": "^2.13.1",
     "typescript": "^5.9.3",
     "vite": "6",
     "vite-plugin-dts": "^4.5.4",
     "vitest": "3.2.0"
+  },
+  "peerDependencies": {
+    "@sveltejs/kit": ">=2",
+    "nitropack": ">=2",
+    "@solidjs/start": ">=1"
+  },
+  "peerDependenciesMeta": {
+    "@sveltejs/kit": {
+      "optional": true
+    },
+    "nitropack": {
+      "optional": true
+    },
+    "@solidjs/start": {
+      "optional": true
+    }
   }
 }

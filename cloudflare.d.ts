@@ -5,6 +5,7 @@ declare namespace Cloudflare {
 	interface Env {
 		ISR_CACHE: KVNamespace;
 		TAG_INDEX: DurableObjectNamespace /* ISRTagIndexDO */;
+		R2_CACHE: R2Bucket;
 	}
 }
 interface Env extends Cloudflare.Env {}

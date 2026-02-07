@@ -8,6 +8,12 @@
       "id": "test-kv-namespace"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "R2_CACHE",
+      "bucket_name": "test-r2-bucket"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
