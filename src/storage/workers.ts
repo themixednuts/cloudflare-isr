@@ -25,10 +25,10 @@ export function createWorkersStorage<KVKey extends string = StorageKey>(
 ): ISRStorage {
   const cacheName = options.cacheName ?? "isr";
   const l1 = createL1CacheApi(cacheName);
-  const l2 = createL2Kv(options.kv);
+  const l2 = createL2Kv(options.kv, options.logger);
   const cache = createTwoTierCache(l1, l2, options.logger);
   const tagIndex = options.tagIndex;
-  const lock = createKvLock<KVKey>(options.kv);
+  const lock = createKvLock<KVKey>(options.kv, options.logger);
 
   return { cache, tagIndex, lock };
 }

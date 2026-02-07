@@ -14,7 +14,26 @@ import type { TagIndex } from "./revalidation/tag-index.ts";
 // Render
 // ---------------------------------------------------------------------------
 
-/** Revalidation behavior for a cached response (seconds, 0 = no store, false = forever). */
+/**
+ * Controls how long a cached response is considered fresh.
+ *
+ * - **Positive number**: TTL in seconds before the entry goes stale.
+ * - **`0`**: Do not cache (no-store). The response is never written to cache.
+ * - **`false`**: Cache forever (immutable). The entry never goes stale.
+ * - **`undefined`**: Inherit from the next config layer (route > default > 60s).
+ *
+ * @example
+ * ```ts
+ * // Cache for 5 minutes
+ * { revalidate: 300 }
+ *
+ * // Never cache (dynamic page)
+ * { revalidate: 0 }
+ *
+ * // Cache forever (static asset)
+ * { revalidate: false }
+ * ```
+ */
 export type RevalidateValue = number | false;
 
 /** Result of rendering a page. */
@@ -84,6 +103,55 @@ interface ISROptionsBase {
   defaultRevalidate?: RevalidateValue;
   /** Secret token that enables draft / bypass mode when provided in a request. */
   bypassToken?: string;
+  /**
+   * Maximum milliseconds to wait for the render function before aborting.
+   * Background revalidation uses `2x` this value to allow more time.
+   * If a timeout occurs during foreground rendering and a stale cache entry
+   * exists, the stale entry is served instead.
+   *
+   * @default 25000
+   *
+   * @example
+   * ```ts
+   * createISR({ renderTimeout: 10000, ... }) // 10s foreground, 20s background
+   * ```
+   */
+  renderTimeout?: number;
+  /**
+   * Acquire a lock on cache MISS to prevent multiple workers from rendering
+   * the same page simultaneously. When a lock cannot be acquired (another
+   * worker is already rendering), `handleRequest` returns `null` so the
+   * framework can handle the request directly without caching.
+   *
+   * @default true
+   *
+   * @example
+   * ```ts
+   * createISR({ lockOnMiss: false, ... }) // disable lock on MISS
+   * ```
+   */
+  lockOnMiss?: boolean;
+  /**
+   * Whether to expose `X-ISR-Status` and `X-ISR-Cache-Date` response headers.
+   * Set to `false` in production to hide cache internals from end users.
+   *
+   * @default true
+   */
+  exposeHeaders?: boolean;
+  /**
+   * Predicate to determine if a response with the given status code should
+   * be cached. Return `false` to skip caching (the response is still returned
+   * to the client, just not stored).
+   *
+   * @default `(status) => status < 500` — caches everything except 5xx server errors.
+   *
+   * @example
+   * ```ts
+   * // Only cache successful responses
+   * shouldCacheStatus: (status) => status >= 200 && status < 300
+   * ```
+   */
+  shouldCacheStatus?: (status: number) => boolean;
   /**
    * Function responsible for rendering a page on cache miss or revalidation.
    *
@@ -171,6 +239,31 @@ interface ISROptionsWithStorage extends ISROptionsBase {
 export type ISROptions = ISROptionsWithBindings | ISROptionsWithStorage;
 
 // ---------------------------------------------------------------------------
+// Adapter options
+// ---------------------------------------------------------------------------
+
+/**
+ * Options accepted by framework adapter `handle()` functions.
+ *
+ * Adapters pass these through to `createISR()` internally, resolving
+ * Cloudflare bindings from the framework's platform/environment context.
+ */
+export interface ISRAdapterOptions {
+  /** Route-specific ISR configuration keyed by path patterns. */
+  routes?: Record<string, RouteConfig>;
+  /** Optional logger hook for warnings and errors. */
+  logger?: Logger;
+  /** Secret token that enables draft / bypass mode. */
+  bypassToken?: string;
+  /** Default TTL in seconds applied when no per-route override is set. */
+  defaultRevalidate?: RevalidateValue;
+  /** KV binding name (default: "ISR_CACHE"). */
+  kvBinding?: string;
+  /** Durable Object binding name (default: "TAG_INDEX"). */
+  tagIndexBinding?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Cache entries
 // ---------------------------------------------------------------------------
 
@@ -226,6 +319,58 @@ export interface CacheLayer {
 // ISR instance
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-request ISR scope with config builder methods.
+ *
+ * Created via `isr.scope()` in middleware — gives load functions a
+ * concurrency-safe way to configure ISR without direct assignment races.
+ *
+ * Layout loads call `defaults()` and page loads call `set()`.
+ * `set()` always wins over `defaults()` for scalar values (revalidate),
+ * while tags are merged from both.
+ */
+export interface ISRRequestScope extends ISRInstance {
+  /**
+   * Set default ISR config for this request. Intended for use in layouts
+   * or shared middleware. Values are overridden by `set()` if called.
+   * Tags from both `defaults()` and `set()` are merged.
+   */
+  defaults(config: RouteConfig): void;
+
+  /**
+   * Set authoritative ISR config for this request. Intended for use in
+   * page-level load functions. Always wins over `defaults()` for scalar
+   * values (`revalidate`). Tags are merged with any `defaults()` tags.
+   */
+  set(config: RouteConfig): void;
+
+  /**
+   * Resolve the merged route config from all config sources.
+   * Returns `null` if no config was found (route did not opt into ISR).
+   *
+   * Config sources (in priority order, highest wins for `revalidate`):
+   * 1. Global `routes` map (from `createISR()`) — base layer
+   * 2. `defaults()` calls — overrides global route config
+   * 3. `set()` calls — overrides everything
+   *
+   * Tags are merged (unioned) across all layers.
+   *
+   * @example
+   * ```ts
+   * // Layout sets defaults, page overrides revalidate, tags merge:
+   * isr.defaults({ revalidate: 300, tags: ["layout"] });
+   * isr.set({ revalidate: 60, tags: ["page"] });
+   * isr.resolveConfig();
+   * // => { revalidate: 60, tags: ["layout", "page"] }
+   *
+   * // No config set — returns null (route did not opt in):
+   * isr.resolveConfig();
+   * // => null
+   * ```
+   */
+  resolveConfig(): RouteConfig | null;
+}
+
 /** The public API surface returned by `createISR()`. */
 export interface ISRInstance {
   /**
@@ -234,11 +379,54 @@ export interface ISRInstance {
    * requests that ISR does not handle (non-GET methods, non-matching routes),
    * allowing the framework to handle them normally.
    *
-   * @param request - The incoming HTTP request.
-   * @param ctx     - The Cloudflare Workers execution context (for `waitUntil`).
+   * When `routeConfig` is provided, the request is treated as an ISR route
+   * using that config — bypassing the static `routes` map entirely. This
+   * allows frameworks to pass per-route config collected from route files
+   * (e.g. SvelteKit's `+page.server.ts`) at request time.
+   *
+   * @param request     - The incoming HTTP request.
+   * @param ctx         - The Cloudflare Workers execution context (for `waitUntil`).
+   * @param routeConfig - Optional per-request route config. When provided, the
+   *                      request opts in to ISR with this config regardless of
+   *                      the static `routes` map.
    * @returns A fully formed HTTP response, or `null` if ISR doesn't handle this request.
    */
-  handleRequest(request: Request, ctx: ExecutionContext): Promise<Response | null>;
+  handleRequest(request: Request, ctx: ExecutionContext, routeConfig?: RouteConfig): Promise<Response | null>;
+
+  /**
+   * Check the cache for a stored response without rendering.
+   *
+   * Returns the cached response with ISR headers (`X-ISR-Status`, etc.),
+   * or `null` on cache miss. Use this as the first half of a split
+   * lifecycle where the framework controls rendering.
+   *
+   * When `ctx` is provided and a `render` function was configured,
+   * stale entries automatically trigger background revalidation via
+   * `ctx.waitUntil`.
+   *
+   * @param request - The incoming HTTP request.
+   * @param ctx     - Optional execution context for background revalidation.
+   * @returns A cached response, or `null` if not in cache.
+   */
+  lookup(request: Request, ctx?: ExecutionContext): Promise<Response | null>;
+
+  /**
+   * Store a framework-rendered response in the ISR cache.
+   *
+   * Use this as the second half of a split lifecycle — after the framework
+   * has rendered the page and the route handler has provided its config.
+   *
+   * Returns a new `Response` with ISR headers attached (`X-ISR-Status: MISS`,
+   * `Cache-Control`, `X-ISR-Cache-Date`). The original response body is
+   * consumed.
+   *
+   * @param request     - The original request (used to derive the cache key).
+   * @param response    - The framework-rendered response to cache (body will be consumed).
+   * @param routeConfig - The route's ISR configuration.
+   * @param ctx         - Execution context for async cache writes via `waitUntil`.
+   * @returns A new response with ISR headers.
+   */
+  cache(request: Request, response: Response, routeConfig: RouteConfig, ctx: ExecutionContext): Promise<Response>;
 
   /**
    * Programmatically revalidate (purge) a specific path.
@@ -254,4 +442,33 @@ export interface ISRInstance {
    * @param tag - The cache tag to invalidate (e.g. `"blog"`).
    */
   revalidateTag(tag: string): Promise<void>;
+
+  /**
+   * Create a per-request scope with config builder methods.
+   *
+   * Use this in middleware/hooks to create a request-scoped ISR object
+   * that load functions can safely call `defaults()` and `set()` on,
+   * even when running concurrently.
+   *
+   * @param request - Optional request for matching against the global `routes`
+   *                  map. When provided, `resolveConfig()` falls back to the
+   *                  matching route config if no `defaults()`/`set()` calls
+   *                  were made, and merges global route tags with per-request tags.
+   *
+   * @example
+   * ```ts
+   * // In hook/middleware:
+   * const scoped = isr.scope(request);
+   * event.locals.isr = scoped;
+   *
+   * const cached = await scoped.lookup(request, ctx);
+   * if (cached) return cached;
+   *
+   * const response = await resolve(event);
+   * const config = scoped.resolveConfig();
+   * if (config) return scoped.cache(request, response, config, ctx);
+   * return response;
+   * ```
+   */
+  scope(request?: Request): ISRRequestScope;
 }

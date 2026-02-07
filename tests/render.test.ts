@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { renderer, ISR_RENDER_HEADER } from "./render.ts";
+import { renderer, ISR_RENDER_HEADER } from "../src/render.ts";
 
 describe("renderer", () => {
   it("creates a function that fetches the same URL with the recursion guard header", async () => {

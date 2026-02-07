@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { logWarn, logError } from "./logger.ts";
+import { logWarn, logError } from "../src/logger.ts";
 
 describe("logWarn", () => {
   it("calls logger.warn when provided", () => {

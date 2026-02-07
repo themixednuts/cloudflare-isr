@@ -7,6 +7,16 @@ function formatLogArgs(logger: Logger | undefined, args: unknown[]): unknown[] {
   return typeof first === "string" ? [`${prefix} ${first}`, ...rest] : [prefix, first, ...rest];
 }
 
+export function logDebug(logger: Logger | undefined, ...args: unknown[]): void {
+  if (!logger?.debug) return;
+  logger.debug(...formatLogArgs(logger, args));
+}
+
+export function logInfo(logger: Logger | undefined, ...args: unknown[]): void {
+  if (!logger?.info) return;
+  logger.info(...formatLogArgs(logger, args));
+}
+
 export function logWarn(logger: Logger | undefined, ...args: unknown[]): void {
   const formatted = formatLogArgs(logger, args);
   if (logger?.warn) {

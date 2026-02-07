@@ -5,11 +5,11 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from "cloudflare:test";
-import { createISR } from "./isr.ts";
-import { createWorkersStorage } from "./storage/workers.ts";
-import { pageKey, cacheApiUrl } from "./keys.ts";
-import { TagIndexDOClient } from "./revalidation/tag-index.ts";
-import type { RenderFunction, RenderResult } from "./types.ts";
+import { createISR } from "../src/isr.ts";
+import { createWorkersStorage } from "../src/storage/workers.ts";
+import { pageKey, cacheApiUrl } from "../src/keys.ts";
+import { TagIndexDOClient } from "../src/revalidation/tag-index.ts";
+import type { RenderFunction, RenderResult } from "../src/types.ts";
 
 function makeRenderResult(overrides?: Partial<RenderResult>): RenderResult {
   return {
@@ -38,7 +38,7 @@ describe("createISR / handleRequest", () => {
     "/custom-key",
     "/error-page",
   ];
-  const TEST_TAGS = ["blog", "static"];
+  const TEST_TAGS = ["blog", "static", "inline", "featured"];
 
   async function clearTag(tag: string): Promise<void> {
     await tagIndex.removeAllKeysForTag(tag);
@@ -777,5 +777,940 @@ describe("createISR / handleRequest", () => {
 
     // Tag index was cleaned — before the new requests re-populate, the old keys were gone
     // (verified by the fact that both were MISS, not served from a stale tier)
+  });
+
+  // ---------------------------------------------------------------------------
+  // Inline route config (per-request opt-in)
+  // ---------------------------------------------------------------------------
+
+  it("inline routeConfig opts in without a static routes map", async () => {
+    // No routes configured — without inline config, all paths are cached.
+    // With inline config, the provided config is used.
+    render.mockResolvedValue(makeRenderResult({ revalidate: undefined, tags: undefined }));
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+      { revalidate: 120, tags: ["inline"] },
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res!.headers.get("Cache-Control")).toContain("s-maxage=120");
+
+    const inlineKeys = await tagIndex.getKeysByTag("inline");
+    expect(inlineKeys).toContain("/page");
+  });
+
+  it("inline routeConfig bypasses the static routes map", async () => {
+    // Static routes only allows /about — but inline config overrides that.
+    render.mockResolvedValue(makeRenderResult({ revalidate: undefined }));
+    const isr = createDefaultISR({
+      routes: { "/about": { revalidate: 60 } },
+    });
+
+    // /page would normally return null (not in static routes)
+    const ctx1 = createExecutionContext();
+    const noInline = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(noInline).toBeNull();
+
+    // With inline config, /page is handled
+    const ctx2 = createExecutionContext();
+    const withInline = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+      { revalidate: 30 },
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(withInline).not.toBeNull();
+    expect(withInline!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(withInline!.headers.get("Cache-Control")).toContain("s-maxage=30");
+  });
+
+  it("inline routeConfig revalidate: 0 triggers SKIP", async () => {
+    render.mockResolvedValue(makeRenderResult({ revalidate: undefined }));
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+      { revalidate: 0 },
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(res!.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("inline routeConfig tags are written to tag index", async () => {
+    render.mockResolvedValue(makeRenderResult({ tags: undefined }));
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    await isr.handleRequest(
+      new Request("https://example.com/blog/post"), ctx,
+      { revalidate: 60, tags: ["blog", "featured"] },
+    );
+    await waitOnExecutionContext(ctx);
+
+    const blogKeys = await tagIndex.getKeysByTag("blog");
+    const featuredKeys = await tagIndex.getKeysByTag("featured");
+    expect(blogKeys).toContain("/blog/post");
+    expect(featuredKeys).toContain("/blog/post");
+  });
+  // ---------------------------------------------------------------------------
+  // Render timeout
+  // ---------------------------------------------------------------------------
+
+  it("render timeout: rejects when render exceeds timeout", async () => {
+    render.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(makeRenderResult()), 500)),
+    );
+    const isr = createDefaultISR({ renderTimeout: 50 });
+
+    const ctx = createExecutionContext();
+    await expect(
+      isr.handleRequest(new Request("https://example.com/page"), ctx),
+    ).rejects.toThrow("Render timeout");
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("render timeout: succeeds when render completes within timeout", async () => {
+    render.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(makeRenderResult({ body: "<html>Fast</html>" })), 10)),
+    );
+    const isr = createDefaultISR({ renderTimeout: 5000 });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res).not.toBeNull();
+    expect(await res!.text()).toBe("<html>Fast</html>");
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+  });
+
+  it("render timeout: background revalidation uses 2x timeout", async () => {
+    // First render: fast, creates stale entry
+    render.mockResolvedValue(makeRenderResult({
+      body: "<html>Old</html>",
+      revalidate: 0.001,
+    }));
+    const isr = createDefaultISR({ renderTimeout: 100 });
+
+    const ctx1 = createExecutionContext();
+    await isr.handleRequest(new Request("https://example.com/page"), ctx1);
+    await waitOnExecutionContext(ctx1);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Second render: slow (150ms) — within 2x timeout (200ms), should succeed
+    render.mockImplementation(
+      () => new Promise((resolve) =>
+        setTimeout(() => resolve(makeRenderResult({ body: "<html>New</html>", revalidate: 60 })), 150),
+      ),
+    );
+
+    const ctx2 = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    expect(res!.headers.get("X-ISR-Status")).toBe("STALE");
+    await waitOnExecutionContext(ctx2);
+
+    // Background revalidation should have succeeded (150ms < 200ms)
+    const ctx3 = createExecutionContext();
+    const res3 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx3,
+    );
+    await waitOnExecutionContext(ctx3);
+    expect(res3!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res3!.text()).toBe("<html>New</html>");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Lock on MISS
+  // ---------------------------------------------------------------------------
+
+  it("lockOnMiss: returns null when lock is already held", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Hello</html>" }));
+    const isr = createDefaultISR({ lockOnMiss: true });
+
+    // Pre-populate the lock key in KV to simulate another worker holding it
+    await env.ISR_CACHE.put("lock:/page", Date.now().toString(), { expirationTtl: 60 });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(new Request("https://example.com/page"), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Should return null because lock was already held
+    expect(res).toBeNull();
+    // Render should not have been called
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("lockOnMiss: disabled — concurrent MISS requests both render", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>A</html>" }));
+    const isr = createDefaultISR({ lockOnMiss: false });
+
+    const ctx1 = createExecutionContext();
+    const ctx2 = createExecutionContext();
+    const [res1, res2] = await Promise.all([
+      isr.handleRequest(new Request("https://example.com/page"), ctx1),
+      isr.handleRequest(new Request("https://example.com/page"), ctx2),
+    ]);
+    await waitOnExecutionContext(ctx1);
+    await waitOnExecutionContext(ctx2);
+
+    // Both should get responses (neither returns null)
+    expect(res1).not.toBeNull();
+    expect(res2).not.toBeNull();
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // exposeHeaders
+  // ---------------------------------------------------------------------------
+
+  it("exposeHeaders: false hides X-ISR-Status and X-ISR-Cache-Date", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Hello</html>" }));
+    const isr = createDefaultISR({ exposeHeaders: false });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res).not.toBeNull();
+    expect(res!.headers.get("X-ISR-Status")).toBeNull();
+    expect(res!.headers.get("X-ISR-Cache-Date")).toBeNull();
+    expect(await res!.text()).toBe("<html>Hello</html>");
+  });
+
+  it("exposeHeaders: true (default) shows X-ISR-Status", async () => {
+    render.mockResolvedValue(makeRenderResult());
+    const isr = createDefaultISR();
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+  });
+
+  // ---------------------------------------------------------------------------
+  // shouldCacheStatus
+  // ---------------------------------------------------------------------------
+
+  it("shouldCacheStatus: skips caching for 5xx by default", async () => {
+    render.mockResolvedValue(makeRenderResult({ status: 500, body: "Internal Error" }));
+    const isr = createDefaultISR();
+
+    // First request: MISS, but 500 is not cached
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/error-page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1!.status).toBe(500);
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // Second request: still MISS (500 was not cached)
+    render.mockResolvedValue(makeRenderResult({ status: 500, body: "Internal Error 2" }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/error-page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  it("shouldCacheStatus: custom predicate controls which statuses are cached", async () => {
+    render.mockResolvedValue(makeRenderResult({ status: 404, body: "Not Found" }));
+    // Only cache 200-299
+    const isr = createDefaultISR({
+      shouldCacheStatus: (status: number) => status >= 200 && status < 300,
+    });
+
+    const ctx = createExecutionContext();
+    const res = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res!.status).toBe(404);
+    expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // Second request should be MISS (404 was not cached)
+    render.mockResolvedValue(makeRenderResult({ status: 404, body: "Not Found Again" }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mixed config validation
+  // ---------------------------------------------------------------------------
+
+  it("throws when both kv and storage are provided", () => {
+    expect(() => {
+      createISR({
+        kv: env.ISR_CACHE,
+        tagIndex: env.TAG_INDEX,
+        storage: createWorkersStorage({
+          kv: env.ISR_CACHE,
+          cacheName: "test",
+          tagIndex: new TagIndexDOClient(env.TAG_INDEX),
+        }),
+      } as any);
+    }).toThrow("Cannot mix shorthand (kv, tagIndex) and advanced (storage) config");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Thundering herd MISS lock
+  // ---------------------------------------------------------------------------
+
+  describe("thundering herd MISS lock", () => {
+    it("5 concurrent requests with held lock: render called 0 times, all return null", async () => {
+      // Simulate another worker holding the lock by pre-populating the lock key.
+      // This deterministically tests the thundering herd guard: with the lock held,
+      // ALL 5 requests return null and render is never called.
+      await env.ISR_CACHE.put("lock:/page", Date.now().toString(), { expirationTtl: 60 });
+
+      render.mockResolvedValue(makeRenderResult({ body: "<html>Should not render</html>" }));
+      const isr = createDefaultISR({ lockOnMiss: true });
+      const CONCURRENCY = 5;
+
+      const contexts = Array.from({ length: CONCURRENCY }, () => createExecutionContext());
+      const results = await Promise.all(
+        contexts.map((ctx) =>
+          isr.handleRequest(new Request("https://example.com/page"), ctx),
+        ),
+      );
+      await Promise.all(contexts.map((ctx) => waitOnExecutionContext(ctx)));
+
+      // All 5 requests should return null because lock is held
+      const nullResults = results.filter((r) => r === null);
+      expect(nullResults).toHaveLength(CONCURRENCY);
+
+      // Render should never have been called — all 5 blocked by lock
+      expect(render).not.toHaveBeenCalled();
+    });
+
+    it("lock released: next request acquires lock and renders exactly 1 time", async () => {
+      render.mockResolvedValue(makeRenderResult({ body: "<html>Hello</html>" }));
+      const isr = createDefaultISR({ lockOnMiss: true });
+
+      // Pre-populate the lock
+      await env.ISR_CACHE.put("lock:/page", Date.now().toString(), { expirationTtl: 60 });
+
+      // Request returns null because lock is held
+      const ctx1 = createExecutionContext();
+      const res1 = await isr.handleRequest(
+        new Request("https://example.com/page"), ctx1,
+      );
+      await waitOnExecutionContext(ctx1);
+      expect(res1).toBeNull();
+      expect(render).not.toHaveBeenCalled();
+
+      // Release the lock
+      await env.ISR_CACHE.delete("lock:/page");
+
+      // Next request should acquire the lock and render successfully
+      const ctx2 = createExecutionContext();
+      const res2 = await isr.handleRequest(
+        new Request("https://example.com/page"), ctx2,
+      );
+      await waitOnExecutionContext(ctx2);
+
+      expect(res2).not.toBeNull();
+      expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+      expect(await res2!.text()).toBe("<html>Hello</html>");
+      // Render called exactly 1 time — only the request that got the lock
+      expect(render).toHaveBeenCalledTimes(1);
+    });
+
+    it("without lockOnMiss: 5 concurrent requests all render (no protection)", async () => {
+      // Contrast test: with lockOnMiss disabled, all concurrent requests render.
+      // This proves the lock is what prevents the thundering herd.
+      render.mockResolvedValue(makeRenderResult({ body: "<html>A</html>" }));
+      const isr = createDefaultISR({ lockOnMiss: false });
+      const CONCURRENCY = 5;
+
+      const contexts = Array.from({ length: CONCURRENCY }, () => createExecutionContext());
+      const results = await Promise.all(
+        contexts.map((ctx) =>
+          isr.handleRequest(new Request("https://example.com/page"), ctx),
+        ),
+      );
+      await Promise.all(contexts.map((ctx) => waitOnExecutionContext(ctx)));
+
+      // All 5 get responses (none return null)
+      const responses = results.filter((r): r is Response => r !== null);
+      expect(responses).toHaveLength(CONCURRENCY);
+
+      // All 5 trigger render — thundering herd with no lock
+      expect(render).toHaveBeenCalledTimes(CONCURRENCY);
+    });
+
+    it("single request always succeeds with lockOnMiss: true", async () => {
+      render.mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return makeRenderResult({ body: "<html>Winner</html>" });
+      });
+
+      const isr = createDefaultISR({ lockOnMiss: true });
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page"), ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+      expect(await res!.text()).toBe("<html>Winner</html>");
+      expect(render).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tag truncation desync prevention
+  // ---------------------------------------------------------------------------
+
+  describe("tag truncation desync", () => {
+    it("tags exceeding KV metadata limit: tag index and cache have same truncated set", async () => {
+      // Use 10 tags of max length (128 chars). Metadata with 8+ such tags exceeds
+      // 1024 bytes, so fitMetadataTags will truncate to ~7. Both the cache entry
+      // metadata and tag index must receive the SAME truncated set.
+      const longTags = Array.from({ length: 10 }, (_, i) =>
+        "a".repeat(120) + String(i).padStart(8, "0"),
+      );
+
+      render.mockResolvedValue(makeRenderResult({ tags: longTags }));
+      const isr = createDefaultISR();
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page"), ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      expect(res!.headers.get("X-ISR-Status")).toBe("MISS");
+
+      // Read what the tag index has for each tag
+      const indexedTags: string[] = [];
+      for (const tag of longTags) {
+        const keys = await tagIndex.getKeysByTag(tag);
+        if (keys.includes("/page")) {
+          indexedTags.push(tag);
+        }
+      }
+
+      // Read what the cache entry metadata has — fetch from KV directly
+      const kvEntry = await env.ISR_CACHE.get(pageKey("/page"), { type: "json" }) as { body: string; headers: Record<string, string> } | null;
+      const kvMeta = await env.ISR_CACHE.getWithMetadata(pageKey("/page"), { type: "json" });
+      const metadataTags = (kvMeta.metadata as any)?.tags as string[] ?? [];
+
+      // Both sets must be identical — no desync
+      expect(indexedTags).toEqual(metadataTags);
+
+      // Truncation actually happened (fewer than 10 tags stored)
+      expect(metadataTags.length).toBeLessThan(longTags.length);
+      expect(metadataTags.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // isCacheEntry type guard (via BYPASS / SKIP path where buildResponse
+  // receives the raw RenderResult, not a CacheEntry)
+  // ---------------------------------------------------------------------------
+
+  describe("isCacheEntry type guard (via handleRequest behavior)", () => {
+    it("BYPASS: render result with extra metadata-like property uses RenderResult fields", async () => {
+      // In BYPASS mode, buildResponse receives the raw RenderResult directly
+      // (not wrapped in createCacheEntry). A RenderResult with a `metadata`
+      // property (but missing createdAt) must NOT be treated as a CacheEntry.
+      const trickResult = {
+        body: "<html>Tricky</html>",
+        status: 201,
+        headers: { "content-type": "text/html" },
+        tags: ["tricky"],
+        // Extra property that could confuse a duck-type check
+        metadata: { unrelated: true },
+      };
+
+      render.mockResolvedValue(trickResult as any);
+      const isr = createDefaultISR({ bypassToken: "secret-token" });
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page", {
+          headers: { "x-isr-bypass": "secret-token" },
+        }),
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      // Should use RenderResult.status (201), not try to read metadata.status
+      expect(res!.status).toBe(201);
+      expect(res!.headers.get("X-ISR-Status")).toBe("BYPASS");
+      expect(await res!.text()).toBe("<html>Tricky</html>");
+    });
+
+    it("BYPASS: render result with null metadata is not treated as CacheEntry", async () => {
+      const result = {
+        body: "<html>Null Meta</html>",
+        status: 203,
+        headers: { "content-type": "text/html" },
+        tags: [],
+        metadata: null,
+      };
+
+      render.mockResolvedValue(result as any);
+      const isr = createDefaultISR({ bypassToken: "token" });
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page", {
+          headers: { "x-isr-bypass": "token" },
+        }),
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      // metadata is null, so isCacheEntry returns false -> uses RenderResult.status
+      expect(res!.status).toBe(203);
+      expect(res!.headers.get("X-ISR-Status")).toBe("BYPASS");
+    });
+
+    it("BYPASS: render result with metadata as string is not treated as CacheEntry", async () => {
+      // metadata is a string, not an object — typeof check rejects it
+      const result = {
+        body: "<html>String Meta</html>",
+        status: 202,
+        headers: { "content-type": "text/html" },
+        tags: [],
+        metadata: "not-an-object",
+      };
+
+      render.mockResolvedValue(result as any);
+      const isr = createDefaultISR({ bypassToken: "token" });
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page", {
+          headers: { "x-isr-bypass": "token" },
+        }),
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      // metadata is a string, so isCacheEntry returns false -> uses RenderResult.status
+      expect(res!.status).toBe(202);
+      expect(res!.headers.get("X-ISR-Status")).toBe("BYPASS");
+      expect(await res!.text()).toBe("<html>String Meta</html>");
+    });
+
+    it("SKIP: render result with fake metadata.createdAt is treated as CacheEntry by type guard", async () => {
+      // If a RenderResult has metadata with createdAt, isCacheEntry returns
+      // true and buildResponse reads status from metadata.status. This tests
+      // that the guard is strict enough to detect genuine CacheEntry shapes.
+      const cacheEntryLike = {
+        body: "<html>CacheLike</html>",
+        status: 200,
+        headers: { "content-type": "text/html" },
+        tags: [],
+        revalidate: 0, // Forces SKIP path — buildResponse receives raw RenderResult
+        metadata: {
+          createdAt: Date.now(),
+          revalidateAfter: null,
+          status: 404,
+          tags: [],
+        },
+      };
+
+      render.mockResolvedValue(cacheEntryLike as any);
+      const isr = createDefaultISR();
+
+      const ctx = createExecutionContext();
+      const res = await isr.handleRequest(
+        new Request("https://example.com/page"), ctx,
+      );
+      await waitOnExecutionContext(ctx);
+
+      expect(res).not.toBeNull();
+      // isCacheEntry returns true (metadata.createdAt exists), so buildResponse
+      // uses metadata.status (404) for the HTTP status code
+      expect(res!.status).toBe(404);
+      expect(res!.headers.get("X-ISR-Status")).toBe("SKIP");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Split lifecycle: lookup + cache
+// ---------------------------------------------------------------------------
+
+describe("lookup + cache (split lifecycle)", () => {
+  let render: MockedFunction<RenderFunction>;
+  let tagIndex: TagIndexDOClient;
+
+  const CACHE_NAME = "isr-split-test";
+
+  const TEST_PATHS = ["/page", "/blog/hello", "/blog/post", "/dynamic"];
+  const TEST_TAGS = ["blog", "home", "split-tag"];
+
+  async function clearTag(tag: string): Promise<void> {
+    await tagIndex.removeAllKeysForTag(tag);
+  }
+
+  beforeEach(async () => {
+    render = vi.fn<RenderFunction>().mockResolvedValue(makeRenderResult());
+    tagIndex = new TagIndexDOClient(env.TAG_INDEX, { name: "split-tests" });
+
+    await Promise.all(
+      TEST_PATHS.map((p) => env.ISR_CACHE.delete(`isr:${p}`)),
+    );
+    await Promise.all(
+      TEST_TAGS.map((t) => clearTag(t)),
+    );
+
+    const cache = await caches.open(CACHE_NAME);
+    await Promise.all(
+      TEST_PATHS.map((p) => cache.delete(cacheApiUrl(p))),
+    );
+  });
+
+  function createSplitISR(overrides?: Record<string, unknown>) {
+    const storage = createWorkersStorage({
+      kv: env.ISR_CACHE,
+      cacheName: CACHE_NAME,
+      tagIndex,
+    });
+    return createISR({
+      storage,
+      defaultRevalidate: 60,
+      render,
+      ...overrides,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // lookup
+  // ---------------------------------------------------------------------------
+
+  it("lookup: returns null on cache miss", async () => {
+    const isr = createSplitISR();
+    const res = await isr.lookup(new Request("https://example.com/page"));
+    expect(res).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("lookup: returns null for non-GET requests", async () => {
+    const isr = createSplitISR();
+    const res = await isr.lookup(
+      new Request("https://example.com/page", { method: "POST" }),
+    );
+    expect(res).toBeNull();
+  });
+
+  it("lookup: returns null for recursion guard header", async () => {
+    const isr = createSplitISR();
+    const res = await isr.lookup(
+      new Request("https://example.com/page", {
+        headers: { "X-ISR-Rendering": "1" },
+      }),
+    );
+    expect(res).toBeNull();
+  });
+
+  it("lookup: returns HIT after cache is populated", async () => {
+    const isr = createSplitISR();
+
+    // Populate via cache()
+    const ctx1 = createExecutionContext();
+    const frameworkResponse = new Response("<html>Hello</html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+    await isr.cache(
+      new Request("https://example.com/page"),
+      frameworkResponse,
+      { revalidate: 60, tags: ["home"] },
+      ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    // lookup should return HIT
+    const res = await isr.lookup(new Request("https://example.com/page"));
+    expect(res).not.toBeNull();
+    expect(res!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await res!.text()).toBe("<html>Hello</html>");
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("lookup: returns STALE for expired entries", async () => {
+    const isr = createSplitISR();
+
+    // Populate with very short TTL
+    const ctx1 = createExecutionContext();
+    await isr.cache(
+      new Request("https://example.com/page"),
+      new Response("<html>Old</html>", { status: 200 }),
+      { revalidate: 0.001 },
+      ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const res = await isr.lookup(new Request("https://example.com/page"));
+    expect(res).not.toBeNull();
+    expect(res!.headers.get("X-ISR-Status")).toBe("STALE");
+    expect(await res!.text()).toBe("<html>Old</html>");
+  });
+
+  it("lookup: STALE triggers background revalidation when ctx and render provided", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh</html>", revalidate: 60 }));
+    const isr = createSplitISR();
+
+    // Populate with very short TTL
+    const ctx1 = createExecutionContext();
+    await isr.cache(
+      new Request("https://example.com/page"),
+      new Response("<html>Old</html>", { status: 200 }),
+      { revalidate: 0.001 },
+      ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // lookup with ctx — should trigger background revalidation
+    const ctx2 = createExecutionContext();
+    const stale = await isr.lookup(new Request("https://example.com/page"), ctx2);
+    expect(stale!.headers.get("X-ISR-Status")).toBe("STALE");
+
+    // Wait for background revalidation
+    await waitOnExecutionContext(ctx2);
+
+    // Next lookup should be HIT with fresh content
+    const fresh = await isr.lookup(new Request("https://example.com/page"));
+    expect(fresh).not.toBeNull();
+    expect(fresh!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await fresh!.text()).toBe("<html>Fresh</html>");
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it("lookup: bypass token renders fresh when render is configured", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>Bypass</html>" }));
+    const isr = createSplitISR({ bypassToken: "secret" });
+
+    const res = await isr.lookup(
+      new Request("https://example.com/page", {
+        headers: { "x-isr-bypass": "secret" },
+      }),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.headers.get("X-ISR-Status")).toBe("BYPASS");
+    expect(res!.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  // ---------------------------------------------------------------------------
+  // cache
+  // ---------------------------------------------------------------------------
+
+  it("cache: stores response and returns it with ISR headers", async () => {
+    const isr = createSplitISR();
+    const ctx = createExecutionContext();
+
+    const res = await isr.cache(
+      new Request("https://example.com/page"),
+      new Response("<html>Cached</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+      { revalidate: 120 },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(res.headers.get("X-ISR-Cache-Date")).not.toBeNull();
+    // Split lifecycle strips CDN cache headers so every request hits the worker
+    expect(res.headers.get("Cache-Control")).toBe("private, no-cache");
+    expect(await res.text()).toBe("<html>Cached</html>");
+  });
+
+  it("cache: writes tags to tag index", async () => {
+    const isr = createSplitISR();
+    const ctx = createExecutionContext();
+
+    await isr.cache(
+      new Request("https://example.com/blog/post"),
+      new Response("<html>Post</html>", { status: 200 }),
+      { revalidate: 60, tags: ["blog", "split-tag"] },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    const blogKeys = await tagIndex.getKeysByTag("blog");
+    const splitKeys = await tagIndex.getKeysByTag("split-tag");
+    expect(blogKeys).toContain("/blog/post");
+    expect(splitKeys).toContain("/blog/post");
+  });
+
+  it("cache: revalidate 0 returns SKIP without caching", async () => {
+    const isr = createSplitISR();
+    const ctx = createExecutionContext();
+
+    const res = await isr.cache(
+      new Request("https://example.com/dynamic"),
+      new Response("<html>Dynamic</html>", { status: 200 }),
+      { revalidate: 0 },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.headers.get("X-ISR-Status")).toBe("SKIP");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+
+    // Should not be in cache
+    const lookup = await isr.lookup(new Request("https://example.com/dynamic"));
+    expect(lookup).toBeNull();
+  });
+
+  it("cache: preserves non-200 status", async () => {
+    const isr = createSplitISR();
+    const ctx = createExecutionContext();
+
+    const res = await isr.cache(
+      new Request("https://example.com/page"),
+      new Response("Not Found", { status: 404 }),
+      { revalidate: 60 },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // HIT should also be 404
+    const hit = await isr.lookup(new Request("https://example.com/page"));
+    expect(hit!.status).toBe(404);
+    expect(hit!.headers.get("X-ISR-Status")).toBe("HIT");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Full split lifecycle (simulates SvelteKit hook pattern)
+  // ---------------------------------------------------------------------------
+
+  it("full lifecycle: lookup miss → framework render → cache → lookup hit", async () => {
+    const isr = createSplitISR();
+
+    // 1. Hook: lookup — MISS
+    const miss = await isr.lookup(new Request("https://example.com/blog/hello"));
+    expect(miss).toBeNull();
+
+    // 2. Framework renders (simulated)
+    const frameworkResponse = new Response("<html>Blog Post</html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+
+    // 3. Load function opted in, hook caches the response
+    const ctx1 = createExecutionContext();
+    const cached = await isr.cache(
+      new Request("https://example.com/blog/hello"),
+      frameworkResponse,
+      { revalidate: 120, tags: ["blog"] },
+      ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    expect(cached.headers.get("X-ISR-Status")).toBe("MISS");
+    // Split lifecycle strips CDN cache headers so every request hits the worker
+    expect(cached.headers.get("Cache-Control")).toBe("private, no-cache");
+
+    // 4. Next request: lookup — HIT
+    const hit = await isr.lookup(new Request("https://example.com/blog/hello"));
+    expect(hit).not.toBeNull();
+    expect(hit!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(await hit!.text()).toBe("<html>Blog Post</html>");
+
+    // Render was never called — framework handled rendering, ISR just cached
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("full lifecycle: revalidateTag purges entries stored via cache()", async () => {
+    const isr = createSplitISR();
+
+    // Store two pages with same tag
+    const ctx1 = createExecutionContext();
+    await isr.cache(
+      new Request("https://example.com/blog/hello"),
+      new Response("<html>A</html>", { status: 200 }),
+      { revalidate: 60, tags: ["blog"] },
+      ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+
+    const ctx2 = createExecutionContext();
+    await isr.cache(
+      new Request("https://example.com/blog/post"),
+      new Response("<html>B</html>", { status: 200 }),
+      { revalidate: 60, tags: ["blog"] },
+      ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+
+    // Both should be HIT
+    const hitA = await isr.lookup(new Request("https://example.com/blog/hello"));
+    expect(hitA!.headers.get("X-ISR-Status")).toBe("HIT");
+    const hitB = await isr.lookup(new Request("https://example.com/blog/post"));
+    expect(hitB!.headers.get("X-ISR-Status")).toBe("HIT");
+
+    // Purge by tag
+    await isr.revalidateTag("blog");
+
+    // Both should be MISS now
+    const missA = await isr.lookup(new Request("https://example.com/blog/hello"));
+    expect(missA).toBeNull();
+    const missB = await isr.lookup(new Request("https://example.com/blog/post"));
+    expect(missB).toBeNull();
+  });
+
+  it("full lifecycle: route that doesn't set config is not cached", async () => {
+    const isr = createSplitISR();
+
+    // 1. lookup — MISS
+    const miss = await isr.lookup(new Request("https://example.com/page"));
+    expect(miss).toBeNull();
+
+    // 2. Framework renders, but load function did NOT set isrRouteConfig
+    //    Hook returns the framework response directly without calling cache()
+
+    // 3. Next request — still MISS (nothing was cached)
+    const miss2 = await isr.lookup(new Request("https://example.com/page"));
+    expect(miss2).toBeNull();
   });
 });
