@@ -51,7 +51,6 @@ export function sanitizeHeaders(
  * Caching Set-Cookie replays one user's session to all subsequent visitors,
  * enabling session hijacking and session fixation attacks.
  *
- * @see CVE-2024-46982 -- Next.js cache poisoning via cached response headers
  * @see RFC 7234 Section 3 -- shared caches MUST NOT store Set-Cookie
  * @see Web Cache Deception (Black Hat 2024) -- cached auth headers enable account takeover
  */
@@ -76,7 +75,7 @@ export const responseHeaders = {
  * attacker-controlled server whose response gets cached permanently.
  *
  * @see CVE-2025-67647 -- SvelteKit SSRF via unchecked Host header
- * @see CVE-2025-12543 -- Host validation bypass enables cache poisoning
+ * @see CWE-20 -- Improper Input Validation (Host header)
  */
 export const host = {
   PATTERN: /^[a-zA-Z0-9._\-]+(:\d{1,5})?$/,

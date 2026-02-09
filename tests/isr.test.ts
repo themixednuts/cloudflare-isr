@@ -108,7 +108,7 @@ describe("createISR / handleRequest", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Security: cached response header stripping (CVE-2024-46982, RFC 7234 §3)
+  // Security: cached response header stripping (RFC 7234 §3)
   // ---------------------------------------------------------------------------
 
   it("strips Set-Cookie from render response before caching (session hijack prevention)", async () => {
@@ -1812,7 +1812,7 @@ describe("lookup + cache (split lifecycle)", () => {
     expect(missB).toBeNull();
   });
 
-  it("split lifecycle: Set-Cookie from framework response is stripped before caching (CVE-2024-46982)", async () => {
+  it("split lifecycle: Set-Cookie from framework response is stripped before caching (RFC 7234 §3)", async () => {
     const isr = createSplitISR();
     const request = new Request("https://example.com/page");
 
