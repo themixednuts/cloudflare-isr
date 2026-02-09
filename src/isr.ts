@@ -138,6 +138,7 @@ export function createISR(options: ISROptions): ISRInstance {
    * External clients cannot guess this value, preventing ISR bypass.
    *
    * @see CVE-2024-46982 -- Next.js internal header spoofed to poison cache
+   * @see CVE-2025-29927 -- Next.js middleware bypass via spoofed x-middleware-subrequest
    */
   const renderNonce = crypto.randomUUID();
 

@@ -27,7 +27,7 @@ export const ISR_RENDER_HEADER = "X-ISR-Rendering" as const;
  * If Cookie/Authorization are forwarded, the render produces user-specific
  * content which then gets cached and served to all visitors.
  *
- * @see CWE-598 -- Use of GET Request Method With Sensitive Query Strings (credentials in self-fetch)
+ * @see CWE-212 -- Improper Removal of Sensitive Information Before Storage or Transfer
  * @see Web Cache Deception (Black Hat 2024) -- authenticated responses cached in shared cache
  */
 export const requestHeaders = {

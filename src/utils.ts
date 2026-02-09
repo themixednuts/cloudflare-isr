@@ -274,7 +274,7 @@ export function fitMetadataTags(
  * Cache API namespace collisions or corrupt storage could inject invalid
  * JSON that is trusted as a valid CacheEntry without validation.
  *
- * @see CWE-502 -- Deserialization of Untrusted Data
+ * @see CWE-1287 -- Improper Validation of Specified Type of Input
  */
 export const cacheEntry = {
   validate(parsed: unknown): CacheEntry | null {
