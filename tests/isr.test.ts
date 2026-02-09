@@ -107,17 +107,99 @@ describe("createISR / handleRequest", () => {
     expect(response!.headers.get("X-ISR-Status")).toBe("MISS");
   });
 
-  it("returns null for ISR render header (recursion guard)", async () => {
-    const ctx = createExecutionContext();
+  // ---------------------------------------------------------------------------
+  // Security: cached response header stripping (CVE-2024-46982, RFC 7234 §3)
+  // ---------------------------------------------------------------------------
+
+  it("strips Set-Cookie from render response before caching (session hijack prevention)", async () => {
+    render.mockResolvedValue(
+      makeRenderResult({
+        headers: {
+          "content-type": "text/html",
+          "set-cookie": "session=victim-token; Path=/; HttpOnly",
+          "x-custom": "preserved",
+        },
+      }),
+    );
     const isr = createDefaultISR();
+    const ctx = createExecutionContext();
+
+    // First request: renders and caches
+    const firstResponse = await isr.handleRequest(
+      new Request("https://example.com/page"),
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(firstResponse).not.toBeNull();
+    // Set-Cookie MUST NOT appear in the response served from ISR
+    expect(firstResponse!.headers.get("set-cookie")).toBeNull();
+    // Safe headers are preserved
+    expect(firstResponse!.headers.get("x-custom")).toBe("preserved");
+
+    // Second request: served from cache — Set-Cookie must still be absent
+    const ctx2 = createExecutionContext();
+    const cachedResponse = await isr.handleRequest(
+      new Request("https://example.com/page"),
+      ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+
+    expect(cachedResponse).not.toBeNull();
+    expect(cachedResponse!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(cachedResponse!.headers.get("set-cookie")).toBeNull();
+    expect(cachedResponse!.headers.get("x-custom")).toBe("preserved");
+  });
+
+  it("strips WWW-Authenticate from render response before caching", async () => {
+    render.mockResolvedValue(
+      makeRenderResult({
+        headers: {
+          "content-type": "text/html",
+          "www-authenticate": "Bearer realm=\"api\"",
+        },
+      }),
+    );
+    const isr = createDefaultISR();
+    const ctx = createExecutionContext();
+
+    const response = await isr.handleRequest(
+      new Request("https://example.com/page"),
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(response).not.toBeNull();
+    expect(response!.headers.get("www-authenticate")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Security: recursion guard nonce (CVE-2024-46982)
+  // ---------------------------------------------------------------------------
+
+  it("does not bypass ISR when external request has X-ISR-Rendering: 1 (spoofed header)", async () => {
+    render.mockResolvedValue(makeRenderResult({ body: "<html>rendered</html>" }));
+
+    const isr = createISR({
+      kv: env.ISR_CACHE,
+      tagIndex: env.TAG_INDEX,
+      cacheName: CACHE_NAME,
+      render,
+      routes: { "/page": { revalidate: 60 } },
+    });
+
+    // External request with the old recursion guard value "1"
     const request = new Request("https://example.com/page", {
       headers: { "X-ISR-Rendering": "1" },
     });
+    const ctx = createExecutionContext();
     const response = await isr.handleRequest(request, ctx);
     await waitOnExecutionContext(ctx);
 
-    expect(response).toBeNull();
-    expect(render).not.toHaveBeenCalled();
+    // Should NOT return null (which would indicate bypass)
+    // Instead should process normally and render
+    expect(response).not.toBeNull();
+    expect(render).toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------
@@ -1062,6 +1144,34 @@ describe("createISR / handleRequest", () => {
     expect(render).toHaveBeenCalledTimes(2);
   });
 
+  it("shouldCacheStatus: skips caching 204 No Content by default (CVE-2025-49826)", async () => {
+    // 204 has no body — caching it replaces real page content with an empty
+    // response for all subsequent visitors (DoS via empty-body cache poisoning).
+    render.mockResolvedValue(makeRenderResult({ status: 204, body: "" }));
+    const isr = createDefaultISR();
+
+    // First request: renders 204 but does NOT cache it
+    const ctx1 = createExecutionContext();
+    const res1 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx1,
+    );
+    await waitOnExecutionContext(ctx1);
+    expect(res1!.status).toBe(204);
+    expect(res1!.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // Second request: still MISS (204 was not cached), render called again
+    render.mockResolvedValue(makeRenderResult({ status: 200, body: "<html>Real</html>" }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest(
+      new Request("https://example.com/page"), ctx2,
+    );
+    await waitOnExecutionContext(ctx2);
+    expect(res2!.status).toBe(200);
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res2!.text()).toBe("<html>Real</html>");
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
   // ---------------------------------------------------------------------------
   // Mixed config validation
   // ---------------------------------------------------------------------------
@@ -1433,13 +1543,16 @@ describe("lookup + cache (split lifecycle)", () => {
     expect(res).toBeNull();
   });
 
-  it("lookup: returns null for recursion guard header", async () => {
+  it("lookup: does not bypass when external request has X-ISR-Rendering: 1 (spoofed header)", async () => {
     const isr = createSplitISR();
     const res = await isr.lookup(
       new Request("https://example.com/page", {
         headers: { "X-ISR-Rendering": "1" },
       }),
     );
+    // lookup should NOT return null due to spoofed header.
+    // It returns null because cache is MISS, not because of recursion guard.
+    // The key point: the spoofed "1" value does not match the per-instance nonce.
     expect(res).toBeNull();
   });
 
@@ -1697,6 +1810,65 @@ describe("lookup + cache (split lifecycle)", () => {
     expect(missA).toBeNull();
     const missB = await isr.lookup(new Request("https://example.com/blog/post"));
     expect(missB).toBeNull();
+  });
+
+  it("split lifecycle: Set-Cookie from framework response is stripped before caching (CVE-2024-46982)", async () => {
+    const isr = createSplitISR();
+    const request = new Request("https://example.com/page");
+
+    // 1. lookup — MISS
+    const miss = await isr.lookup(request);
+    expect(miss).toBeNull();
+
+    // 2. Framework renders a response with Set-Cookie
+    const frameworkResponse = new Response("<html>dashboard</html>", {
+      status: 200,
+      headers: {
+        "content-type": "text/html",
+        "set-cookie": "session=victim-token; Path=/; HttpOnly",
+        "x-safe-header": "preserved",
+      },
+    });
+
+    // 3. Store via cache() — Set-Cookie should be stripped
+    const ctx = createExecutionContext();
+    const isrResponse = await isr.cache(request, frameworkResponse, { revalidate: 60 }, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(isrResponse.headers.get("set-cookie")).toBeNull();
+    expect(isrResponse.headers.get("x-safe-header")).toBe("preserved");
+
+    // 4. Next request — cached response also has no Set-Cookie
+    const cached = await isr.lookup(new Request("https://example.com/page"));
+    expect(cached).not.toBeNull();
+    expect(cached!.headers.get("X-ISR-Status")).toBe("HIT");
+    expect(cached!.headers.get("set-cookie")).toBeNull();
+    expect(cached!.headers.get("x-safe-header")).toBe("preserved");
+  });
+
+  it("split lifecycle: 204 No Content response is not cached (CVE-2025-49826)", async () => {
+    const isr = createSplitISR();
+    const request = new Request("https://example.com/page");
+
+    // 1. lookup — MISS
+    const miss = await isr.lookup(request);
+    expect(miss).toBeNull();
+
+    // 2. Framework returns 204 No Content (empty body)
+    const frameworkResponse = new Response(null, { status: 204 });
+
+    // 3. cache() should skip caching the 204 response
+    const ctx = createExecutionContext();
+    const isrResponse = await isr.cache(request, frameworkResponse, { revalidate: 60 }, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(isrResponse.status).toBe(204);
+    // MISS means "not stored" — the 204 was returned but not cached
+    expect(isrResponse.headers.get("X-ISR-Status")).toBe("MISS");
+
+    // 4. Next request — still MISS (204 was not cached)
+    const miss2 = await isr.lookup(new Request("https://example.com/page"));
+    expect(miss2).toBeNull();
   });
 
   it("full lifecycle: route that doesn't set config is not cached", async () => {

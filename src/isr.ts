@@ -124,7 +124,34 @@ export function createISR(options: ISROptions): ISRInstance {
   const renderTimeout = options.renderTimeout ?? DEFAULT_RENDER_TIMEOUT;
   const lockOnMiss = options.lockOnMiss !== false;
   const exposeHeaders = options.exposeHeaders !== false;
-  const shouldCacheStatus = options.shouldCacheStatus ?? ((status: number) => status < 500);
+  /**
+   * Default: cache everything except 5xx and 204 No Content.
+   * 204 responses have no body; caching them replaces real page content
+   * with an empty response for all subsequent visitors (DoS).
+   *
+   * @see CVE-2025-49826 -- empty-body response cached as page content
+   */
+  const shouldCacheStatus = options.shouldCacheStatus ?? ((status: number) => status < 500 && status !== 204);
+
+  /**
+   * Per-instance nonce for the recursion guard header.
+   * External clients cannot guess this value, preventing ISR bypass.
+   *
+   * @see CVE-2024-46982 -- Next.js internal header spoofed to poison cache
+   */
+  const renderNonce = crypto.randomUUID();
+
+  const renderRequest = {
+    wrap(request: Request): Request {
+      const headers = new Headers(request.headers);
+      headers.set(ISR_RENDER_HEADER, renderNonce);
+      return new Request(request.url, { headers });
+    },
+    isRender(request: Request): boolean {
+      return request.headers.get(ISR_RENDER_HEADER) === renderNonce;
+    },
+  };
+
   const revalidator = createRevalidator({
     storage,
     cacheKey,
@@ -153,9 +180,9 @@ export function createISR(options: ISROptions): ISRInstance {
         return null;
       }
 
-      // Recursion guard: selfFetch() render requests carry this header.
+      // Recursion guard: selfFetch() render requests carry the per-instance nonce.
       // Return null so the framework renders the page normally.
-      if (request.headers.get(ISR_RENDER_HEADER) === "1") {
+      if (renderRequest.isRender(request)) {
         return null;
       }
 
@@ -184,7 +211,7 @@ export function createISR(options: ISROptions): ISRInstance {
       // Bypass mode — render fresh, skip cache entirely.
       if (isBypass(request, options.bypassToken)) {
         const result = await toRenderResult(
-          await withTimeout(render(request), renderTimeout, "Render timeout"),
+          await withTimeout(render(renderRequest.wrap(request)), renderTimeout, "Render timeout"),
         );
         return buildResponse(result, "BYPASS", logger, { noStore: true, exposeHeaders });
       }
@@ -196,7 +223,7 @@ export function createISR(options: ISROptions): ISRInstance {
 
       if (isNoStore(routeRevalidate)) {
         const result = await toRenderResult(
-          await withTimeout(render(request), renderTimeout, "Render timeout"),
+          await withTimeout(render(renderRequest.wrap(request)), renderTimeout, "Render timeout"),
         );
         ctx.waitUntil(
           cache.delete(key).catch((error) => {
@@ -225,7 +252,7 @@ export function createISR(options: ISROptions): ISRInstance {
             lock: storage.lock,
             tagIndex,
             cache,
-            render,
+            render: (req) => render(renderRequest.wrap(req)),
             defaultRevalidate,
             routeConfig,
             logger,
@@ -251,7 +278,7 @@ export function createISR(options: ISROptions): ISRInstance {
       }
 
       const result = await toRenderResult(
-        await withTimeout(render(request), renderTimeout, "Render timeout"),
+        await withTimeout(render(renderRequest.wrap(request)), renderTimeout, "Render timeout"),
       );
 
       const revalidateSeconds = resolveRevalidate({
@@ -310,7 +337,7 @@ export function createISR(options: ISROptions): ISRInstance {
         return null;
       }
 
-      if (request.headers.get(ISR_RENDER_HEADER) === "1") {
+      if (renderRequest.isRender(request)) {
         logDebug(logger, "lookup: skipping render request (recursion guard)");
         return null;
       }
@@ -323,7 +350,7 @@ export function createISR(options: ISROptions): ISRInstance {
         logDebug(logger, "lookup: bypass token detected for", key);
         if (options.render) {
           const result = await toRenderResult(
-            await withTimeout(options.render(request), renderTimeout, "Render timeout"),
+            await withTimeout(options.render(renderRequest.wrap(request)), renderTimeout, "Render timeout"),
           );
           return buildResponse(result, "BYPASS", logger, { noStore: true, exposeHeaders });
         }
@@ -357,7 +384,7 @@ export function createISR(options: ISROptions): ISRInstance {
               lock: storage.lock,
               tagIndex,
               cache,
-              render: options.render,
+              render: (req) => options.render!(renderRequest.wrap(req)),
               defaultRevalidate,
               routeConfig,
               logger,

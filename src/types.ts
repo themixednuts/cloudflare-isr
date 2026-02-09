@@ -143,7 +143,11 @@ interface ISROptionsBase {
    * be cached. Return `false` to skip caching (the response is still returned
    * to the client, just not stored).
    *
-   * @default `(status) => status < 500` — caches everything except 5xx server errors.
+   * @default `(status) => status < 500 && status !== 204` — caches everything
+   * except 5xx server errors and 204 No Content (which has no body and would
+   * replace real page content with an empty response for all visitors).
+   *
+   * @see CVE-2025-49826 -- empty-body response cached as page content (DoS)
    *
    * @example
    * ```ts
