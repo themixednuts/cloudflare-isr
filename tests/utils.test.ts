@@ -14,6 +14,9 @@ import {
   createCacheEntryMetadata,
   createCacheEntry,
   updateTagIndexSafely,
+  responseHeaders,
+  host,
+  cacheEntry,
   DEFAULT_REVALIDATE,
   MAX_TAG_COUNT,
   MAX_TAG_LENGTH,
@@ -427,5 +430,140 @@ describe("updateTagIndexSafely", () => {
       logger: { warn },
     });
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("responseHeaders", () => {
+  it("strips Set-Cookie header (case-insensitive)", () => {
+    const headers = { "Set-Cookie": "session=abc", "Content-Type": "text/html" };
+    const result = responseHeaders.strip(headers);
+    expect(result).not.toHaveProperty("Set-Cookie");
+    expect(result["Content-Type"]).toBe("text/html");
+  });
+
+  it("strips WWW-Authenticate header", () => {
+    const headers = { "WWW-Authenticate": "Bearer", "X-Custom": "ok" };
+    const result = responseHeaders.strip(headers);
+    expect(result).not.toHaveProperty("WWW-Authenticate");
+    expect(result["X-Custom"]).toBe("ok");
+  });
+
+  it("strips Proxy-Authenticate header", () => {
+    const headers = { "Proxy-Authenticate": "Basic", "Content-Length": "42" };
+    const result = responseHeaders.strip(headers);
+    expect(result).not.toHaveProperty("Proxy-Authenticate");
+    expect(result["Content-Length"]).toBe("42");
+  });
+
+  it("preserves all safe headers", () => {
+    const headers = {
+      "Content-Type": "text/html",
+      "X-Custom": "value",
+      "Cache-Control": "no-cache",
+    };
+    const result = responseHeaders.strip(headers);
+    expect(result).toEqual(headers);
+  });
+
+  it("handles lowercase header keys", () => {
+    const headers = { "set-cookie": "session=abc", "content-type": "text/html" };
+    const result = responseHeaders.strip(headers);
+    expect(result).not.toHaveProperty("set-cookie");
+    expect(result["content-type"]).toBe("text/html");
+  });
+});
+
+describe("host", () => {
+  it("passes through valid hostnames", () => {
+    expect(host.sanitize("example.com")).toBe("example.com");
+  });
+
+  it("passes through hostnames with port", () => {
+    expect(host.sanitize("localhost:8080")).toBe("localhost:8080");
+  });
+
+  it("passes through IP addresses", () => {
+    expect(host.sanitize("192.168.1.1")).toBe("192.168.1.1");
+  });
+
+  it("passes through IP addresses with port", () => {
+    expect(host.sanitize("127.0.0.1:3000")).toBe("127.0.0.1:3000");
+  });
+
+  it("rejects hosts with scheme", () => {
+    expect(host.sanitize("http://evil.com")).toBe("localhost");
+  });
+
+  it("rejects hosts with path", () => {
+    expect(host.sanitize("evil.com/path")).toBe("localhost");
+  });
+
+  it("rejects hosts with CRLF", () => {
+    expect(host.sanitize("evil.com\r\nX-Injected: true")).toBe("localhost");
+  });
+
+  it("rejects empty host", () => {
+    expect(host.sanitize("")).toBe("localhost");
+  });
+
+  it("trims whitespace", () => {
+    expect(host.sanitize("  example.com  ")).toBe("example.com");
+  });
+
+  it("rejects hosts with spaces", () => {
+    expect(host.sanitize("evil .com")).toBe("localhost");
+  });
+});
+
+describe("cacheEntry", () => {
+  it("validates a well-formed cache entry", () => {
+    const entry = {
+      body: "<html>test</html>",
+      headers: { "content-type": "text/html" },
+      metadata: { createdAt: Date.now(), revalidateAfter: null, status: 200, tags: [] },
+    };
+    expect(cacheEntry.validate(entry)).toBe(entry);
+  });
+
+  it("rejects null", () => {
+    expect(cacheEntry.validate(null)).toBeNull();
+  });
+
+  it("rejects non-object", () => {
+    expect(cacheEntry.validate("string")).toBeNull();
+    expect(cacheEntry.validate(42)).toBeNull();
+  });
+
+  it("rejects missing body", () => {
+    expect(cacheEntry.validate({ metadata: { createdAt: 1 } })).toBeNull();
+  });
+
+  it("rejects non-string body", () => {
+    expect(cacheEntry.validate({ body: 123, metadata: { createdAt: 1 } })).toBeNull();
+  });
+
+  it("rejects missing metadata", () => {
+    expect(cacheEntry.validate({ body: "test" })).toBeNull();
+  });
+
+  it("rejects null metadata", () => {
+    expect(cacheEntry.validate({ body: "test", metadata: null })).toBeNull();
+  });
+
+  it("rejects metadata without createdAt", () => {
+    expect(cacheEntry.validate({ body: "test", metadata: { status: 200 } })).toBeNull();
+  });
+
+  it("rejects non-number createdAt", () => {
+    expect(cacheEntry.validate({ body: "test", metadata: { createdAt: "now" } })).toBeNull();
+  });
+
+  it("rejects array headers", () => {
+    expect(cacheEntry.validate({ body: "test", headers: [], metadata: { createdAt: 1 } })).toBeNull();
+  });
+
+  it("accepts entry without headers", () => {
+    const entry = { body: "test", metadata: { createdAt: 1, revalidateAfter: null, status: 200, tags: [] } };
+    expect(cacheEntry.validate(entry)).toBe(entry);
   });
 });

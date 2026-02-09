@@ -3,6 +3,7 @@ import type { H3Event } from "h3";
 import { createISR } from "../isr.ts";
 import { renderer } from "../render.ts";
 import type { ISRAdapterOptions, ISRInstance, ISRRequestScope } from "../types.ts";
+import { host as hostValidator } from "../utils.ts";
 
 export type { ISRAdapterOptions } from "../types.ts";
 
@@ -74,8 +75,8 @@ export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
 
       const { env, context: ctx } = cf;
 
-      const host = event.headers.get("host") ?? "localhost";
-      const url = new URL(event.path, `http://${host}`);
+      const hostValue = hostValidator.sanitize(event.headers.get("host") ?? "localhost", opts.logger);
+      const url = new URL(event.path, `http://${hostValue}`);
       const request = new Request(url.toString(), {
         method: event.method,
         headers: event.headers,

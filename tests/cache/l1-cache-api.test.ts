@@ -133,4 +133,44 @@ describe("createL1CacheApi", () => {
     expect(after.status).toBe("MISS");
     expect(after.entry).toBeNull();
   });
+
+  it("returns MISS for corrupt JSON in cache", async () => {
+    const l1 = createL1CacheApi(CACHE_NAME);
+    // Manually insert corrupt data into the cache
+    const cache = await caches.open(CACHE_NAME);
+    const url = cacheApiUrl("/page");
+    await cache.put(url, new Response("not valid json", {
+      headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=60" },
+    }));
+
+    const result = await l1.get("/page");
+    expect(result.status).toBe("MISS");
+    expect(result.entry).toBeNull();
+  });
+
+  it("returns MISS for JSON missing body field", async () => {
+    const l1 = createL1CacheApi(CACHE_NAME);
+    const cache = await caches.open(CACHE_NAME);
+    const url = cacheApiUrl("/page");
+    await cache.put(url, new Response(JSON.stringify({ metadata: { createdAt: Date.now() } }), {
+      headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=60" },
+    }));
+
+    const result = await l1.get("/page");
+    expect(result.status).toBe("MISS");
+    expect(result.entry).toBeNull();
+  });
+
+  it("returns MISS for JSON with wrong types", async () => {
+    const l1 = createL1CacheApi(CACHE_NAME);
+    const cache = await caches.open(CACHE_NAME);
+    const url = cacheApiUrl("/page");
+    await cache.put(url, new Response(JSON.stringify({ body: 123, metadata: { createdAt: "not a number" } }), {
+      headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=60" },
+    }));
+
+    const result = await l1.get("/page");
+    expect(result.status).toBe("MISS");
+    expect(result.entry).toBeNull();
+  });
 });

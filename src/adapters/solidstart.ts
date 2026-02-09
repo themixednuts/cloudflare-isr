@@ -2,6 +2,7 @@ import type { RequestMiddleware, ResponseMiddleware } from "@solidjs/start/middl
 import { createISR } from "../isr.ts";
 import { renderer } from "../render.ts";
 import type { ISRAdapterOptions, ISRInstance, ISRRequestScope } from "../types.ts";
+import { host as hostValidator } from "../utils.ts";
 
 export type { ISRAdapterOptions } from "../types.ts";
 
@@ -89,8 +90,8 @@ export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
       const { env, context: ctx } = cf;
 
       // nativeEvent is H3Event — use .path + host header to build full URL
-      const host = nativeEvent.headers.get("host") ?? "localhost";
-      const url = new URL(nativeEvent.path, `http://${host}`);
+      const hostValue = hostValidator.sanitize(nativeEvent.headers.get("host") ?? "localhost", opts.logger);
+      const url = new URL(nativeEvent.path, `http://${hostValue}`);
       const request = new Request(url.toString(), {
         method: nativeEvent.method,
         headers: Object.fromEntries(nativeEvent.headers.entries()),

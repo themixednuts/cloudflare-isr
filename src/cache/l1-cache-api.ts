@@ -1,6 +1,6 @@
 import type { CacheEntry, CacheLayer, CacheLayerResult } from "../types.ts";
 import { cacheApiUrl } from "../keys.ts";
-import { determineCacheStatus } from "../utils.ts";
+import { determineCacheStatus, cacheEntry } from "../utils.ts";
 
 /**
  * Creates an L1 cache layer backed by the Cloudflare Cache API.
@@ -22,7 +22,16 @@ export function createL1CacheApi(cacheName: string): CacheLayer {
         return { entry: null, status: "MISS" };
       }
 
-      const entry: CacheEntry = await response.json();
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        return { entry: null, status: "MISS" };
+      }
+      const entry = cacheEntry.validate(parsed);
+      if (!entry) {
+        return { entry: null, status: "MISS" };
+      }
       const now = Date.now();
       const status = determineCacheStatus(entry.metadata.revalidateAfter, now);
 

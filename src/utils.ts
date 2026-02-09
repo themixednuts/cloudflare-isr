@@ -45,6 +45,51 @@ export function sanitizeHeaders(
   return Object.fromEntries(safe.entries());
 }
 
+/**
+ * Response headers that must never be stored in a shared cache.
+ *
+ * Caching Set-Cookie replays one user's session to all subsequent visitors,
+ * enabling session hijacking and session fixation attacks.
+ *
+ * @see CVE-2024-46982 -- Next.js cache poisoning via cached response headers
+ * @see RFC 7234 Section 3 -- shared caches MUST NOT store Set-Cookie
+ * @see Web Cache Deception (Black Hat 2024) -- cached auth headers enable account takeover
+ */
+export const responseHeaders = {
+  UNCACHEABLE: ["set-cookie", "www-authenticate", "proxy-authenticate"] as const,
+  strip(headers: Record<string, string>): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (!responseHeaders.UNCACHEABLE.includes(key.toLowerCase() as typeof responseHeaders.UNCACHEABLE[number])) {
+        result[key] = value;
+      }
+    }
+    return result;
+  },
+};
+
+/**
+ * Host header validation to prevent SSRF and cache poisoning.
+ *
+ * Untrusted Host values are used to construct URLs for self-fetch rendering.
+ * A malicious Host (e.g., "evil.com") redirects the self-fetch to an
+ * attacker-controlled server whose response gets cached permanently.
+ *
+ * @see CVE-2025-67647 -- SvelteKit SSRF via unchecked Host header
+ * @see CVE-2025-12543 -- Host validation bypass enables cache poisoning
+ */
+export const host = {
+  PATTERN: /^[a-zA-Z0-9._\-]+(:\d{1,5})?$/,
+  sanitize(raw: string, logger?: Logger): string {
+    const trimmed = raw.trim();
+    if (!host.PATTERN.test(trimmed)) {
+      logWarn(logger, `Invalid Host header rejected: "${trimmed.slice(0, 64)}"`);
+      return "localhost";
+    }
+    return trimmed;
+  },
+};
+
 /** Maximum number of tags allowed per cache entry. */
 export const MAX_TAG_COUNT = 64;
 /** Maximum character length of a single tag. */
@@ -152,7 +197,7 @@ export function applyCacheControl(
   revalidateSeconds: RevalidateValue,
   logger?: Logger,
 ): Record<string, string> {
-  const safeHeaders = sanitizeHeaders(headers, logger);
+  const safeHeaders = responseHeaders.strip(sanitizeHeaders(headers, logger));
 
   // ISR must always control Cache-Control. If the render function set one, warn and override it.
   if (hasHeader(safeHeaders, "cache-control")) {
@@ -223,6 +268,27 @@ export function fitMetadataTags(
 
   return fittedTags;
 }
+
+/**
+ * Runtime validation for deserialized cache entries.
+ *
+ * Cache API namespace collisions or corrupt storage could inject invalid
+ * JSON that is trusted as a valid CacheEntry without validation.
+ *
+ * @see CWE-502 -- Deserialization of Untrusted Data
+ */
+export const cacheEntry = {
+  validate(parsed: unknown): CacheEntry | null {
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const p = parsed as Record<string, unknown>;
+    if (typeof p.body !== "string") return null;
+    if (typeof p.metadata !== "object" || p.metadata === null) return null;
+    const m = p.metadata as Record<string, unknown>;
+    if (typeof m.createdAt !== "number") return null;
+    if (p.headers !== undefined && (typeof p.headers !== "object" || Array.isArray(p.headers))) return null;
+    return parsed as CacheEntry;
+  },
+};
 
 export function createCacheEntryMetadata(options: {
   result: RenderResult;
