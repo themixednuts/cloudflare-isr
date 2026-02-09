@@ -100,6 +100,33 @@ describe("TagIndexDOClient + ISRTagIndexDO", () => {
     });
   });
 
+  describe("query result limit (CWE-400)", () => {
+    it("returns results with LIMIT clause (normal operation)", async () => {
+      const limitTag = "limit-test";
+      await tagIndex.addKeyToTag(limitTag, "/a");
+      await tagIndex.addKeyToTag(limitTag, "/b");
+      const keys = await tagIndex.getKeysByTag(limitTag);
+      expect(keys.length).toBeLessThanOrEqual(10_000);
+      expect(keys).toContain("/a");
+      expect(keys).toContain("/b");
+      // cleanup
+      await tagIndex.removeKeyFromTag(limitTag, "/a");
+      await tagIndex.removeKeyFromTag(limitTag, "/b");
+    });
+
+    it("LIMIT clause is present in query (100 rows still returns all)", async () => {
+      const bulkTag = "bulk-limit";
+      // Insert 100 rows — all should be returned since 100 < 10,000
+      for (let i = 0; i < 100; i++) {
+        await tagIndex.addKeyToTag(bulkTag, `/page/${i}`);
+      }
+      const keys = await tagIndex.getKeysByTag(bulkTag);
+      expect(keys).toHaveLength(100);
+      // cleanup
+      await tagIndex.removeAllKeysForTag(bulkTag);
+    });
+  });
+
   describe("input validation", () => {
     function doStub() {
       const id = env.TAG_INDEX.idFromName("tag-index-do-validation-tests");

@@ -1,6 +1,7 @@
 // Core API
 export { createISR } from "./isr.ts";
 export { renderer, ISR_RENDER_HEADER } from "./render.ts";
+export { normalizeCacheKey } from "./keys.ts";
 
 // Durable Object (must be re-exported for wrangler to find it)
 export { ISRTagIndexDO } from "./revalidation/tag-index-do.ts";

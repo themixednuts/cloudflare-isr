@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pageKey, lockKey, cacheApiUrl, MAX_KEY_LENGTH } from "../src/keys.ts";
+import { pageKey, lockKey, cacheApiUrl, normalizeCacheKey, MAX_KEY_LENGTH } from "../src/keys.ts";
 
 describe("pageKey", () => {
   it("prefixes path with 'page:'", () => {
@@ -33,6 +33,20 @@ describe("pageKey", () => {
   it("produces different hashes for different long paths", () => {
     const path1 = "/" + "c".repeat(MAX_KEY_LENGTH);
     const path2 = "/" + "d".repeat(MAX_KEY_LENGTH);
+    expect(pageKey(path1)).not.toBe(pageKey(path2));
+  });
+
+  it("produces 16-character hex hash for long paths", () => {
+    const longPath = "/" + "z".repeat(MAX_KEY_LENGTH);
+    const result = pageKey(longPath);
+    const hashPart = result.replace("page:hash:", "");
+    expect(hashPart).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("dual hash produces distinct results for similar inputs", () => {
+    // These strings are designed to be similar — a weak hash might collide
+    const path1 = "/" + "a".repeat(MAX_KEY_LENGTH) + "1";
+    const path2 = "/" + "a".repeat(MAX_KEY_LENGTH) + "2";
     expect(pageKey(path1)).not.toBe(pageKey(path2));
   });
 
@@ -79,5 +93,48 @@ describe("cacheApiUrl", () => {
 describe("MAX_KEY_LENGTH", () => {
   it("is exported and is 480", () => {
     expect(MAX_KEY_LENGTH).toBe(480);
+  });
+});
+
+describe("normalizeCacheKey (Web Cache Deception prevention)", () => {
+  function url(path: string): URL {
+    return new URL(`https://example.com${path}`);
+  }
+
+  it("returns pathname unchanged for normal paths", () => {
+    expect(normalizeCacheKey(url("/blog/hello"))).toBe("/blog/hello");
+  });
+
+  it("preserves root path", () => {
+    expect(normalizeCacheKey(url("/"))).toBe("/");
+  });
+
+  it("strips trailing slash", () => {
+    expect(normalizeCacheKey(url("/page/"))).toBe("/page");
+  });
+
+  it("does not strip trailing slash from root", () => {
+    expect(normalizeCacheKey(url("/"))).toBe("/");
+  });
+
+  it("collapses consecutive slashes", () => {
+    expect(normalizeCacheKey(url("//foo///bar"))).toBe("/foo/bar");
+  });
+
+  it("normalizes /page/ and /page to the same key", () => {
+    expect(normalizeCacheKey(url("/page/"))).toBe(normalizeCacheKey(url("/page")));
+  });
+
+  it("normalizes //page to /page", () => {
+    expect(normalizeCacheKey(url("//page"))).toBe("/page");
+  });
+
+  it("handles deeply nested paths with trailing slash", () => {
+    expect(normalizeCacheKey(url("/a/b/c/d/"))).toBe("/a/b/c/d");
+  });
+
+  it("handles paths with query strings (URL.pathname excludes query)", () => {
+    const u = new URL("https://example.com/page/?q=1");
+    expect(normalizeCacheKey(u)).toBe("/page");
   });
 });

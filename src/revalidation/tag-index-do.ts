@@ -6,6 +6,14 @@ const MAX_INPUT_LENGTH = 2048;
 /** Maximum number of tags allowed in a single /add-bulk request. */
 const MAX_BULK_TAGS = 64;
 
+/**
+ * Maximum rows returned from a single tag query to prevent DO memory exhaustion.
+ * DOs have a 128MB memory limit; an unbounded SELECT could OOM with millions of rows.
+ *
+ * @see CWE-400 -- Uncontrolled Resource Consumption
+ */
+const TAG_QUERY_MAX_RESULTS = 10_000;
+
 /** Thrown for client input validation failures (→ 400). */
 class ValidationError extends Error {
   constructor(message: string) {
@@ -125,8 +133,13 @@ export class ISRTagIndexDO extends DurableObject {
           const tag = url.searchParams.get("tag") ?? "";
           validateInput(tag, "tag");
           const rows = this.sql
-            .exec("SELECT key FROM tag_keys WHERE tag = ?", tag)
+            .exec("SELECT key FROM tag_keys WHERE tag = ? LIMIT ?", tag, TAG_QUERY_MAX_RESULTS)
             .toArray();
+          if (rows.length === TAG_QUERY_MAX_RESULTS) {
+            console.warn(
+              `[ISRTagIndexDO] Tag "${tag.slice(0, 64)}" returned ${TAG_QUERY_MAX_RESULTS} results (limit reached, results truncated)`,
+            );
+          }
           const keys = rows.map((r) => r.key as string);
           return Response.json(keys);
         }
