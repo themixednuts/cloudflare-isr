@@ -76,6 +76,7 @@ export const responseHeaders = {
  * attacker-controlled server whose response gets cached permanently.
  *
  * @see CVE-2025-67647 -- SvelteKit SSRF via unchecked Host header
+ * @see CVE-2025-12543 -- malformed Host validation bypass enables poisoning/SSRF
  * @see CWE-20 -- Improper Input Validation (Host header)
  */
 export const host = {
@@ -86,6 +87,16 @@ export const host = {
       logWarn(logger, `Invalid Host header rejected: "${trimmed.slice(0, 64)}"`);
       return null;
     }
+
+    const { port } = host.split(trimmed);
+    if (port) {
+      const portNumber = Number(port);
+      if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+        logWarn(logger, `Invalid Host port rejected: "${trimmed.slice(0, 64)}"`);
+        return null;
+      }
+    }
+
     return trimmed;
   },
   sanitize(raw: string, logger?: Logger): string {

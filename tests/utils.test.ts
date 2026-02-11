@@ -483,6 +483,10 @@ describe("host", () => {
     expect(host.sanitize("localhost:8080")).toBe("localhost:8080");
   });
 
+  it("rejects hosts with out-of-range port", () => {
+    expect(host.sanitizeOrNull("example.com:70000")).toBeNull();
+  });
+
   it("passes through IP addresses", () => {
     expect(host.sanitize("192.168.1.1")).toBe("192.168.1.1");
   });
@@ -513,6 +517,10 @@ describe("host", () => {
 
   it("rejects hosts with spaces", () => {
     expect(host.sanitize("evil .com")).toBe("localhost");
+  });
+
+  it("rejects malformed hosts with multiple colons (CVE-2025-12543 class)", () => {
+    expect(host.sanitizeOrNull("example.com:80:90")).toBeNull();
   });
 
   it("returns null for invalid host via sanitizeOrNull", () => {
@@ -550,6 +558,18 @@ describe("resolveRequestOrigin", () => {
         allowedHosts: ["api.example.com"],
       })
     ).toThrow("allowedHosts");
+  });
+
+  it("rejects malformed host when building origin (CVE-2025-12543 class)", () => {
+    expect(() =>
+      resolveRequestOrigin({ rawHost: "example.com:80:90" })
+    ).toThrow("Invalid Host header");
+  });
+
+  it("rejects out-of-range host ports when building origin", () => {
+    expect(() =>
+      resolveRequestOrigin({ rawHost: "example.com:70000" })
+    ).toThrow("Invalid Host header");
   });
 
   it("rejects invalid trustedOrigin", () => {

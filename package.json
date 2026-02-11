@@ -65,5 +65,10 @@
     "@solidjs/start": {
       "optional": true
     }
+  },
+  "overrides": {
+    "h3": "1.15.5",
+    "@isaacs/brace-expansion": "5.0.1",
+    "cookie": "0.7.0"
   }
 }
