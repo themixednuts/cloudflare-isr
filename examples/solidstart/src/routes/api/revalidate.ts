@@ -31,6 +31,14 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export async function POST({ request, nativeEvent }: APIEvent) {
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > 4096) {
+    return new Response(JSON.stringify({ error: "Request body too large" }), {
+      status: 413,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const env = (nativeEvent as any).context?.cloudflare?.env as
     | { ISR_CACHE: KVNamespace; TAG_INDEX: DurableObjectNamespace; REVALIDATION_SECRET?: string }
     | undefined;
@@ -58,13 +66,21 @@ export async function POST({ request, nativeEvent }: APIEvent) {
     });
   }
 
-  const body = (await request.json()) as { path?: string; tag?: string };
+  let body: { path?: string; tag?: string };
+  try {
+    body = (await request.json()) as { path?: string; tag?: string };
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (body.path) {
-    await getISR(env).revalidatePath(body.path);
+    await getISR(env).revalidatePath({ path: body.path });
   }
   if (body.tag) {
-    await getISR(env).revalidateTag(body.tag);
+    await getISR(env).revalidateTag({ tag: body.tag });
   }
 
   return new Response(JSON.stringify({ revalidated: true }), {

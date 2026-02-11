@@ -18,6 +18,14 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export const POST: RequestHandler = async ({ request, locals, platform }) => {
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > 4096) {
+    return new Response(JSON.stringify({ error: "Request body too large" }), {
+      status: 413,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const secret = (platform?.env as Record<string, string> | undefined)?.REVALIDATION_SECRET;
   if (!secret) {
     return new Response(JSON.stringify({ error: "REVALIDATION_SECRET not configured" }), {
@@ -34,15 +42,23 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
     });
   }
 
-  const body = await request.json<{ path?: string; tag?: string }>();
+  let body: { path?: string; tag?: string };
+  try {
+    body = (await request.json()) as { path?: string; tag?: string };
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (body.path) {
     console.log(`[revalidate] Purging path: ${body.path}`);
-    await locals.isr.revalidatePath(body.path);
+    await locals.isr.revalidatePath({ path: body.path });
   }
   if (body.tag) {
     console.log(`[revalidate] Purging tag: ${body.tag}`);
-    await locals.isr.revalidateTag(body.tag);
+    await locals.isr.revalidateTag({ tag: body.tag });
   }
 
   return new Response(JSON.stringify({ revalidated: true }), {

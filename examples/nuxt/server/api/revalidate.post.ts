@@ -62,8 +62,8 @@ export default defineEventHandler(async (event) => {
   const tags = body.tags ?? (body.tag ? [body.tag] : []);
 
   await Promise.all([
-    ...paths.map((p) => instance.revalidatePath(p)),
-    ...tags.map((t) => instance.revalidateTag(t)),
+    ...paths.map((path) => instance.revalidatePath({ path })),
+    ...tags.map((tag) => instance.revalidateTag({ tag })),
   ]);
 
   return { revalidated: true };
