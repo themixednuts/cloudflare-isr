@@ -1,110 +1,94 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-02-07
-**Commit:** 9b1ca0b
+**Generated:** 2026-02-11
+**Commit:** 5e59ba7
 **Branch:** main
 
 ## OVERVIEW
 
-Cloudflare Workers ISR (Incremental Static Regeneration) library. Two-tier cache (Cache API L1 + KV L2), tag-based invalidation via Durable Objects with SQLite, framework adapters for SvelteKit/Nuxt/SolidStart. Published to npm + JSR.
+Cloudflare Workers ISR library with two-tier caching (Cache API L1 + KV L2), tag invalidation through Durable Objects (SQLite), and first-party adapters for SvelteKit, Nuxt, and SolidStart. Published to npm + JSR from one TypeScript ESM codebase.
 
 ## STRUCTURE
 
 ```
 cloudflare-isr/
-├── src/
-│   ├── adapters/        # Framework middleware (sveltekit, nuxt, solidstart)
-│   ├── cache/           # Two-tier cache: L1 Cache API (per-colo) + L2 KV (global)
-│   ├── revalidation/    # Tag index (DO + SQLite), distributed locks, background revalidator
-│   ├── storage/         # Pluggable storage backend wiring (workers.ts)
-│   ├── isr.ts           # Core ISR handler — createISR() factory, request lifecycle
-│   ├── render.ts        # Self-fetch renderer factory + recursion guard header
-│   ├── keys.ts          # Cache key generation with djb2 overflow hashing
-│   ├── route-matcher.ts # URL pattern matching with compiled regex cache + validation
-│   ├── bypass.ts        # Draft/preview bypass with constant-time token comparison
-│   ├── types.ts         # All public types + ISROptions (configurable timeouts, locks, headers)
-│   └── utils.ts         # Headers, tags, cache status, metadata size management
-├── tests/               # Mirrors src/ structure exactly (16 files, 287 tests)
-├── examples/            # Full working apps per framework (monorepo workspaces)
-│   ├── sveltekit/       # Includes Playwright e2e tests
-│   ├── nuxt/
-│   ├── solidstart/
-│   ├── workers/         # Raw Cloudflare Workers (hosts shared DO binding)
-│   └── isr-tests.ts     # Cross-framework integration test runner
-├── vite.config.ts       # Multi-entry library build (4 exports)
-├── vitest.config.ts     # Cloudflare Workers pool testing
-├── wrangler.jsonc       # KV, R2, Durable Object bindings for tests
-└── cloudflare.d.ts      # Auto-generated Cloudflare types (~411KB, never hand-edit)
+├── src/                 # Core runtime + adapters + cache/revalidation internals
+│   ├── AGENTS.md
+│   ├── adapters/
+│   ├── cache/
+│   └── revalidation/
+├── tests/               # Workers-runtime tests mirroring src concerns
+├── examples/            # Framework workspaces + integration runner
+│   ├── AGENTS.md
+│   └── sveltekit/AGENTS.md
+├── vite.config.ts       # Multi-entry build (index + 3 adapters)
+├── vitest.config.ts     # Workers test pool config
+├── wrangler.jsonc       # Test-worker bindings
+└── cloudflare.d.ts      # Generated types (never hand-edit)
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| Add/modify ISR behavior | `src/isr.ts` | Core handler, configurable via `ISROptions` |
-| Add framework adapter | `src/adapters/` | Follow handle() + ISRAdapterOptions pattern |
-| Change cache strategy | `src/cache/` | L1/L2 layers compose in two-tier-cache |
-| Tag invalidation logic | `src/revalidation/` | DO-backed SQLite reverse index |
-| Custom storage backend | `src/storage/workers.ts` + `src/types.ts` | Implement `ISRStorage` interface |
-| Public API types | `src/types.ts` | All exports, JSDoc-heavy, configurable options |
-| Write tests | `tests/` matching `src/` path | Cloudflare Workers vitest pool |
-| Integration tests | `examples/isr-tests.ts` | Bun script, hits running examples |
-| E2E tests | `examples/sveltekit/e2e/` | Playwright |
+| Core request lifecycle | `src/isr.ts` | bypass, cache lookup, render, store, background revalidate |
+| Public API contracts | `src/types.ts` | option unions and adapter interfaces |
+| Framework integration | `src/adapters/` | SvelteKit/Nuxt/SolidStart middleware wrappers |
+| Cache behavior | `src/cache/` | L1/L2 layers, backfill, fail-soft handling |
+| Tag invalidation | `src/revalidation/` | DO client/class, lock provider, purge orchestration |
+| Workers runtime tests | `tests/` | `createExecutionContext` + waitUntil flushing patterns |
+| Cross-framework behavior | `examples/isr-tests.ts` | MISS/HIT/revalidate parity checks |
+| Browser-level e2e | `examples/sveltekit/e2e/` | Playwright checks for ISR headers and nested config |
+
+## CODE MAP
+
+| Symbol/Module | Type | Location | Refs | Role |
+|---------------|------|----------|------|------|
+| `createISR` | factory | `src/isr.ts` | high | runtime entry and ISR lifecycle orchestration |
+| `types.ts` surface | contracts | `src/types.ts` | 25 | central contract hub used by src/tests/adapters |
+| `TagIndex` | interface/client | `src/revalidation/tag-index.ts` | 12 | tag lookup and invalidation boundary |
+| key utilities | functions | `src/keys.ts` | 11 | stable cache/lock key generation |
+| shared utilities | functions | `src/utils.ts` | 9 | cache metadata fit, tag validation, header policy |
+| adapter handles | integration | `src/adapters/*.ts` | medium | framework request/response bridge to core ISR |
 
 ## CONVENTIONS
 
-- **Bun** for package management, **Vite** for build, **Vitest** for tests
-- ESM only (`"type": "module"`) — `.ts` extensions in imports
-- Tests run in Cloudflare Workers runtime via `@cloudflare/vitest-pool-workers`
-- `createExecutionContext()` + `waitOnExecutionContext(ctx)` for testing background work
-- Mock layers via factory functions (`makeMockLayer`, `makeRenderResult`, `makeFreshEntry`, `makeStaleEntry`)
-- Multi-entry build: 4 export points (index, sveltekit, nuxt, solidstart)
-- All `dependencies` + `peerDependencies` automatically externalized in Vite config
-- TypeScript strict mode + `noUncheckedIndexedAccess` + `noImplicitOverride`
-- `wrangler types cloudflare.d.ts` regenerates Cloudflare bindings type file
+- ESM-only (`"type": "module"`), TypeScript imports use explicit `.ts` extensions.
+- Bun is the canonical package manager for root and workspaces.
+- CI is publish-oriented (`workflow_dispatch`) and validates before npm/JSR release.
+- Workers runtime is first-class in tests (`@cloudflare/vitest-pool-workers` + Wrangler bindings).
+- Public package surface is intentionally narrow: root export + three adapter subpath exports.
 
-## CONFIGURABLE OPTIONS (ISROptions)
+## ANTI-PATTERNS (THIS PROJECT)
 
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `renderTimeout` | 25000ms | Max render wait (background gets 2x) |
-| `lockOnMiss` | `true` | Thundering herd protection on cache MISS |
-| `exposeHeaders` | `true` | Toggle X-ISR-Status/X-ISR-Cache-Date headers |
-| `shouldCacheStatus` | `status < 500` | Skip caching 5xx responses |
-| `bypassToken` | — | Draft/preview mode secret |
-| `defaultRevalidate` | 60s | Fallback TTL when no route config set |
+- Never delete cache entries on revalidation failure; keep last-known-good.
+- Never omit `X-ISR-Rendering` from custom render paths.
+- Never ship ISR cache-control without `no-cache`.
+- Never throw hard on cache layer failures; log and degrade to MISS.
+- Never mix shorthand (`kv`/`tagIndex`) and advanced (`storage`) config in one `createISR` call.
+- Never hand-edit `cloudflare.d.ts`; regenerate with `bun run cf:types`.
 
-## ANTI-PATTERNS
+## UNIQUE STYLES
 
-- **Never delete cache entries on revalidation failure** — keep last-known-good (revalidator.ts)
-- **Never omit `X-ISR-Rendering` header in custom render functions** — causes infinite recursion (render.ts)
-- **Never use Cache-Control without `no-cache`** — must reach worker every request (isr.ts)
-- **Never throw on cache layer failures** — log warning, return MISS, continue (cache/, utils.ts)
-- **Never mix shorthand (`kv`/`tagIndex`) and advanced (`storage`) config** — enforced by TypeScript `never` types + runtime guard
-- **Locks are best-effort, not atomic** — two workers may revalidate simultaneously (harmless)
-- **Never hand-edit cloudflare.d.ts** — regenerate with `bun run cf:types`
+- Config precedence is explicit: `set()` > `defaults()` > global `routes`, tags are unioned.
+- Security checks use constant-time token comparison for bypass/revalidation endpoints.
+- Background work is best-effort via guarded `ctx.waitUntil` flows.
+- Example apps reuse one dedicated DO host worker through Wrangler multi-config.
 
 ## COMMANDS
 
 ```bash
-bun install              # Install dependencies
-bun run build            # Build library (4 entry points)
-bun run typecheck        # TypeScript check only
-bun run test             # Unit tests (Cloudflare Workers pool, 287 tests)
-bun run test:integration # E2E against running examples
-bun run cf:types         # Regenerate cloudflare.d.ts
+bun install
+bun run build
+bun run typecheck
+bun run test
+bun run test:integration
+bun run cf:types
 ```
 
 ## NOTES
 
-- Revalidate priority: `set()` > `defaults()` > global `routes` map; tags are merged (unioned)
-- Only GET/HEAD requests are cacheable; all others return null
-- `ISRTagIndexDO` must be exported from main entry for Wrangler discovery
-- Publish workflow is manual dispatch only (`workflow_dispatch`), dual-publishes to npm + JSR
-- KV keys >480 bytes auto-hashed via djb2 (`safeKey()` in keys.ts)
-- KV metadata capped at 1024 bytes; tags truncated via `fitMetadataTags()` before both cache.put() and tag index
-- Tag validation: max 64 tags, 128 chars each, alphanumeric + `_-.:/ `only
-- Route patterns validated: no multiple catch-alls, max 512 chars
-- Bypass token uses constant-time comparison (`safeEqual`)
-- Examples are full monorepo workspaces with their own `wrangler.jsonc`
-- `nul` file in root is a Windows artifact, safe to delete
+- Scale snapshot: 123 files, about 20.9k TS/Py/Go lines, max directory depth 6.
+- Complexity-scored hierarchy: root plus `src/`, `examples/`, and `examples/sveltekit/` as primary domain docs.
+- Existing focused docs remain in `src/cache/`, `src/revalidation/`, `src/adapters/`, and `tests/`.
+- `dist/` is tracked build output; source of truth is `src/`.
