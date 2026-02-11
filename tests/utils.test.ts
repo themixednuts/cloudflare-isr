@@ -16,6 +16,7 @@ import {
   updateTagIndexSafely,
   responseHeaders,
   host,
+  resolveRequestOrigin,
   cacheEntry,
   DEFAULT_REVALIDATE,
   MAX_TAG_COUNT,
@@ -512,6 +513,52 @@ describe("host", () => {
 
   it("rejects hosts with spaces", () => {
     expect(host.sanitize("evil .com")).toBe("localhost");
+  });
+
+  it("returns null for invalid host via sanitizeOrNull", () => {
+    expect(host.sanitizeOrNull("http://evil.com")).toBeNull();
+  });
+});
+
+describe("resolveRequestOrigin", () => {
+  it("uses trustedOrigin when provided", () => {
+    const origin = resolveRequestOrigin({
+      rawHost: "ignored.example.com",
+      trustedOrigin: "https://app.example.com",
+    });
+    expect(origin).toBe("https://app.example.com");
+  });
+
+  it("builds https origin from valid host by default", () => {
+    const origin = resolveRequestOrigin({ rawHost: "example.com" });
+    expect(origin).toBe("https://example.com");
+  });
+
+  it("supports host allowlist", () => {
+    expect(
+      resolveRequestOrigin({
+        rawHost: "api.example.com",
+        allowedHosts: ["api.example.com"],
+      }),
+    ).toBe("https://api.example.com");
+  });
+
+  it("rejects host outside allowlist", () => {
+    expect(() =>
+      resolveRequestOrigin({
+        rawHost: "evil.com",
+        allowedHosts: ["api.example.com"],
+      })
+    ).toThrow("allowedHosts");
+  });
+
+  it("rejects invalid trustedOrigin", () => {
+    expect(() =>
+      resolveRequestOrigin({
+        rawHost: "example.com",
+        trustedOrigin: "notaurl",
+      })
+    ).toThrow("trustedOrigin");
   });
 });
 

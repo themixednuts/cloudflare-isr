@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { pageKey, lockKey, cacheApiUrl, normalizeCacheKey, MAX_KEY_LENGTH } from "../src/keys.ts";
+import {
+  pageKey,
+  lockKey,
+  cacheApiUrl,
+  normalizeCacheKey,
+  defaultCacheKey,
+  MAX_KEY_LENGTH,
+} from "../src/keys.ts";
 
 describe("pageKey", () => {
   it("prefixes path with 'page:'", () => {
@@ -136,5 +143,22 @@ describe("normalizeCacheKey (Web Cache Deception prevention)", () => {
   it("handles paths with query strings (URL.pathname excludes query)", () => {
     const u = new URL("https://example.com/page/?q=1");
     expect(normalizeCacheKey(u)).toBe("/page");
+  });
+});
+
+describe("defaultCacheKey", () => {
+  it("includes normalized path and sorted query params", () => {
+    const url = new URL("https://example.com/page/?b=2&a=1");
+    expect(defaultCacheKey(url)).toBe("/page?a=1&b=2");
+  });
+
+  it("preserves duplicate query params in stable order", () => {
+    const url = new URL("https://example.com/search?tag=b&tag=a");
+    expect(defaultCacheKey(url)).toBe("/search?tag=a&tag=b");
+  });
+
+  it("returns only path when query is empty", () => {
+    const url = new URL("https://example.com/blog/hello");
+    expect(defaultCacheKey(url)).toBe("/blog/hello");
   });
 });

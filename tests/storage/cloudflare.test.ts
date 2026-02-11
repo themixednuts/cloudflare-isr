@@ -197,7 +197,7 @@ describe("cache: Cache API", () => {
     expect(await r2.text()).toBe("<p>v1</p>");
     expect(render).toHaveBeenCalledTimes(1);
 
-    await isr.revalidatePath("/swap/a");
+    await isr.revalidatePath({ path: "/swap/a" });
     render.mockResolvedValue(makeResult({ body: "<p>v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/swap/a");
@@ -230,7 +230,7 @@ describe("cache: KV", () => {
     expect(r2.headers.get("X-ISR-Status")).toBe("HIT");
     expect(render).toHaveBeenCalledTimes(1);
 
-    await isr.revalidatePath("/swap/b");
+    await isr.revalidatePath({ path: "/swap/b" });
     render.mockResolvedValue(makeResult({ body: "<p>kv2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/swap/b");
@@ -280,7 +280,7 @@ describe("cache: R2", () => {
     expect(await r2.text()).toBe("<p>r2-v1</p>");
     expect(render).toHaveBeenCalledTimes(1);
 
-    await isr.revalidatePath("/swap/a");
+    await isr.revalidatePath({ path: "/swap/a" });
     render.mockResolvedValue(makeResult({ body: "<p>r2-v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/swap/a");
@@ -318,7 +318,7 @@ describe("cache: R2", () => {
     const hit = await handleAndWait(isr, "https://example.com/swap/blog/1");
     expect(hit.headers.get("X-ISR-Status")).toBe("HIT");
 
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
     render.mockResolvedValue(makeResult({ tags: ["blog"], body: "<p>new</p>" }));
 
     const miss1 = await handleAndWait(isr, "https://example.com/swap/blog/1");
@@ -354,7 +354,7 @@ describe("tag index: KV", () => {
     const hit = await handleAndWait(isr, "https://example.com/swap/blog/1");
     expect(hit.headers.get("X-ISR-Status")).toBe("HIT");
 
-    await isr.revalidateTag("news");
+    await isr.revalidateTag({ tag: "news" });
     render.mockResolvedValue(makeResult({ tags: ["news"], body: "<p>fresh</p>" }));
 
     const miss = await handleAndWait(isr, "https://example.com/swap/blog/1");
@@ -378,7 +378,7 @@ describe("tag index: KV", () => {
     const hit = await handleAndWait(isr, "https://example.com/swap/product/1");
     expect(hit.headers.get("X-ISR-Status")).toBe("HIT");
 
-    await isr.revalidateTag("product");
+    await isr.revalidateTag({ tag: "product" });
     render.mockResolvedValue(makeResult({ tags: ["product"], body: "<p>new</p>" }));
 
     const miss = await handleAndWait(isr, "https://example.com/swap/product/1");
@@ -519,7 +519,7 @@ describe("mixed: R2 + KV tags + KV lock", () => {
     expect(render).toHaveBeenCalledTimes(1);
 
     // Tag purge
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
     render.mockResolvedValue(makeResult({ tags: ["blog"], body: "<p>v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/swap/a");
@@ -527,7 +527,7 @@ describe("mixed: R2 + KV tags + KV lock", () => {
     expect(await r3.text()).toBe("<p>v2</p>");
 
     // Path purge
-    await isr.revalidatePath("/swap/a");
+    await isr.revalidatePath({ path: "/swap/a" });
     render.mockResolvedValue(makeResult({ tags: ["blog"], body: "<p>v3</p>" }));
 
     const r4 = await handleAndWait(isr, "https://example.com/swap/a");

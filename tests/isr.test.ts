@@ -433,7 +433,7 @@ describe("createISR / handleRequest", () => {
     await waitOnExecutionContext(ctx);
 
     // Purge
-    await isr.revalidatePath("/blog/hello");
+    await isr.revalidatePath({ path: "/blog/hello" });
 
     // Verify MISS with new content
     render.mockResolvedValue(makeRenderResult({ body: "<html>New</html>" }));
@@ -467,7 +467,7 @@ describe("createISR / handleRequest", () => {
     expect(hitA!.headers.get("X-ISR-Status")).toBe("HIT");
 
     // Invalidate tag
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
 
     // Both should be MISS now
     render.mockResolvedValue(makeRenderResult({ body: "<html>Fresh A</html>" }));
@@ -620,6 +620,30 @@ describe("createISR / handleRequest", () => {
     expect(res2!.headers.get("X-ISR-Status")).toBe("HIT");
     expect(await res2!.text()).toBe("<html>From Response</html>");
     expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Default cache key includes query params
+  // ---------------------------------------------------------------------------
+
+  it("uses query-aware default cache key", async () => {
+    const isr = createDefaultISR();
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>A</html>" }));
+    const ctx1 = createExecutionContext();
+    await isr.handleRequest({ request: new Request("https://example.com/page?v=1"), ctx: ctx1 });
+    await waitOnExecutionContext(ctx1);
+
+    render.mockResolvedValue(makeRenderResult({ body: "<html>B</html>" }));
+    const ctx2 = createExecutionContext();
+    const res2 = await isr.handleRequest({
+      request: new Request("https://example.com/page?v=2"),
+      ctx: ctx2,
+    });
+    await waitOnExecutionContext(ctx2);
+
+    expect(res2!.headers.get("X-ISR-Status")).toBe("MISS");
+    expect(await res2!.text()).toBe("<html>B</html>");
   });
 
   // ---------------------------------------------------------------------------
@@ -804,7 +828,7 @@ describe("createISR / handleRequest", () => {
     expect(before).toContain("/blog/a");
 
     // Invalidate tag
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
 
     // Tag index should be empty for this tag
     const after = await tagIndex.getKeysByTag("blog");
@@ -829,7 +853,7 @@ describe("createISR / handleRequest", () => {
     expect(hitRes!.headers.get("X-ISR-Status")).toBe("HIT");
 
     // Revalidate path
-    await isr.revalidatePath("/blog/hello");
+    await isr.revalidatePath({ path: "/blog/hello" });
 
     // Immediately after — should be MISS, not STALE from a remaining tier
     render.mockResolvedValue(makeRenderResult({ body: "<html>After purge</html>" }));
@@ -868,7 +892,7 @@ describe("createISR / handleRequest", () => {
     expect(hitB!.headers.get("X-ISR-Status")).toBe("HIT");
 
     // Invalidate
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
 
     // Both MISS
     render.mockResolvedValue(makeRenderResult({ body: "<html>New A</html>", tags: ["blog"] }));
@@ -1850,7 +1874,7 @@ describe("lookup + cache (split lifecycle)", () => {
     expect(hitB!.headers.get("X-ISR-Status")).toBe("HIT");
 
     // Purge by tag
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
 
     // Both should be MISS now
     const missA = await isr.lookup({ request: new Request("https://example.com/blog/hello") });

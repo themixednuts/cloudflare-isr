@@ -240,7 +240,7 @@ describe("swap CacheLayer", () => {
     expect(await r2.text()).toBe("<p>v1</p>");
     expect(render).toHaveBeenCalledTimes(1);
 
-    await isr.revalidatePath("/a");
+    await isr.revalidatePath({ path: "/a" });
     render.mockResolvedValue(makeResult({ body: "<p>v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/a");
@@ -264,7 +264,7 @@ describe("swap CacheLayer", () => {
     expect(await r2.text()).toBe("<p>v1</p>");
     expect(render).toHaveBeenCalledTimes(1);
 
-    await isr.revalidatePath("/a");
+    await isr.revalidatePath({ path: "/a" });
     render.mockResolvedValue(makeResult({ body: "<p>v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/a");
@@ -313,7 +313,7 @@ describe("swap TagIndex", () => {
     expect(hitA.headers.get("X-ISR-Status")).toBe("HIT");
     expect(hitB.headers.get("X-ISR-Status")).toBe("HIT");
 
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
     render.mockResolvedValue(makeResult({ tags: ["blog"], body: "<p>new</p>" }));
 
     const missA = await handleAndWait(isr, "https://example.com/blog/a");
@@ -341,7 +341,7 @@ describe("swap TagIndex", () => {
     expect(hit1.headers.get("X-ISR-Status")).toBe("HIT");
     expect(hit2.headers.get("X-ISR-Status")).toBe("HIT");
 
-    await isr.revalidateTag("news");
+    await isr.revalidateTag({ tag: "news" });
     render.mockResolvedValue(makeResult({ tags: ["news"], body: "<p>fresh</p>" }));
 
     const miss1 = await handleAndWait(isr, "https://example.com/news/1");
@@ -370,7 +370,7 @@ describe("swap TagIndex", () => {
     await handleAndWait(isr, "https://example.com/docs/x");
 
     // Purge only "blog"
-    await isr.revalidateTag("blog");
+    await isr.revalidateTag({ tag: "blog" });
 
     const blogRes = await handleAndWait(isr, "https://example.com/blog/a");
     expect(blogRes.headers.get("X-ISR-Status")).toBe("MISS");
@@ -496,7 +496,7 @@ describe("mixed implementations", () => {
     expect(render).toHaveBeenCalledTimes(1);
 
     // Tag purge
-    await isr.revalidateTag("product");
+    await isr.revalidateTag({ tag: "product" });
     render.mockResolvedValue(makeResult({ tags: ["product"], body: "<p>v2</p>" }));
 
     const r3 = await handleAndWait(isr, "https://example.com/product/1");
@@ -504,7 +504,7 @@ describe("mixed implementations", () => {
     expect(await r3.text()).toBe("<p>v2</p>");
 
     // Path purge
-    await isr.revalidatePath("/product/1");
+    await isr.revalidatePath({ path: "/product/1" });
     render.mockResolvedValue(makeResult({ tags: ["product"], body: "<p>v3</p>" }));
 
     const r4 = await handleAndWait(isr, "https://example.com/product/1");
@@ -585,7 +585,7 @@ describe("mixed implementations", () => {
     expect(hit.headers.get("X-ISR-Status")).toBe("HIT");
 
     // Invalidate only "featured" — the page has both tags, so it gets purged
-    await isr.revalidateTag("featured");
+    await isr.revalidateTag({ tag: "featured" });
 
     const miss = await handleAndWait(isr, "https://example.com/post/1");
     expect(miss.headers.get("X-ISR-Status")).toBe("MISS");
