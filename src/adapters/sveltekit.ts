@@ -74,7 +74,7 @@ export function handle(opts: ISRAdapterOptions = {}): Handle {
     (event.locals as Record<string, unknown>).isr = scoped;
 
     // Phase 1: check cache
-    const cached = await scoped.lookup(event.request, ctx);
+    const cached = await scoped.lookup({ request: event.request, ctx });
     if (cached) return cached;
 
     // Phase 2: framework renders (load functions call isr.defaults()/set())
@@ -83,7 +83,7 @@ export function handle(opts: ISRAdapterOptions = {}): Handle {
     // Phase 3: store in cache if the route opted in
     const routeConfig = scoped.resolveConfig();
     if (routeConfig) {
-      return scoped.cache(event.request, response, routeConfig, ctx);
+      return scoped.cache({ request: event.request, response, routeConfig, ctx });
     }
 
     return response;

@@ -323,6 +323,46 @@ export interface CacheLayer {
 // ISR instance
 // ---------------------------------------------------------------------------
 
+/** Options accepted by `handleRequest()`. */
+export interface HandleRequestOptions<
+  TRequest extends Request = Request,
+  TCtx extends ExecutionContext = ExecutionContext,
+> {
+  /** The incoming HTTP request. */
+  request: TRequest;
+  /** The Cloudflare Workers execution context (for `waitUntil`). */
+  ctx: TCtx;
+  /** Optional per-request route config. */
+  routeConfig?: RouteConfig;
+}
+
+/** Options accepted by `lookup()`. */
+export interface LookupOptions<
+  TRequest extends Request = Request,
+  TCtx extends ExecutionContext = ExecutionContext,
+> {
+  /** The incoming HTTP request. */
+  request: TRequest;
+  /** Optional execution context for background revalidation. */
+  ctx?: TCtx;
+}
+
+/** Options accepted by `cache()`. */
+export interface CacheOptions<
+  TRequest extends Request = Request,
+  TResponse extends Response = Response,
+  TCtx extends ExecutionContext = ExecutionContext,
+> {
+  /** The original request (used to derive the cache key). */
+  request: TRequest;
+  /** The framework-rendered response to cache (body will be consumed). */
+  response: TResponse;
+  /** The route's ISR configuration. */
+  routeConfig: RouteConfig;
+  /** Execution context for async cache writes via `waitUntil`. */
+  ctx: TCtx;
+}
+
 /**
  * Per-request ISR scope with config builder methods.
  *
@@ -388,14 +428,13 @@ export interface ISRInstance {
    * allows frameworks to pass per-route config collected from route files
    * (e.g. SvelteKit's `+page.server.ts`) at request time.
    *
-   * @param request     - The incoming HTTP request.
-   * @param ctx         - The Cloudflare Workers execution context (for `waitUntil`).
-   * @param routeConfig - Optional per-request route config. When provided, the
-   *                      request opts in to ISR with this config regardless of
-   *                      the static `routes` map.
+ * @param options - `{ request, ctx, routeConfig }`.
    * @returns A fully formed HTTP response, or `null` if ISR doesn't handle this request.
    */
-  handleRequest(request: Request, ctx: ExecutionContext, routeConfig?: RouteConfig): Promise<Response | null>;
+  handleRequest<
+    TRequest extends Request = Request,
+    TCtx extends ExecutionContext = ExecutionContext,
+  >(options: HandleRequestOptions<TRequest, TCtx>): Promise<Response | null>;
 
   /**
    * Check the cache for a stored response without rendering.
@@ -408,11 +447,13 @@ export interface ISRInstance {
    * stale entries automatically trigger background revalidation via
    * `ctx.waitUntil`.
    *
-   * @param request - The incoming HTTP request.
-   * @param ctx     - Optional execution context for background revalidation.
+ * @param options - `{ request, ctx }`.
    * @returns A cached response, or `null` if not in cache.
    */
-  lookup(request: Request, ctx?: ExecutionContext): Promise<Response | null>;
+  lookup<
+    TRequest extends Request = Request,
+    TCtx extends ExecutionContext = ExecutionContext,
+  >(options: LookupOptions<TRequest, TCtx>): Promise<Response | null>;
 
   /**
    * Store a framework-rendered response in the ISR cache.
@@ -424,13 +465,14 @@ export interface ISRInstance {
    * `Cache-Control`, `X-ISR-Cache-Date`). The original response body is
    * consumed.
    *
-   * @param request     - The original request (used to derive the cache key).
-   * @param response    - The framework-rendered response to cache (body will be consumed).
-   * @param routeConfig - The route's ISR configuration.
-   * @param ctx         - Execution context for async cache writes via `waitUntil`.
+ * @param options - `{ request, response, routeConfig, ctx }`.
    * @returns A new response with ISR headers.
    */
-  cache(request: Request, response: Response, routeConfig: RouteConfig, ctx: ExecutionContext): Promise<Response>;
+  cache<
+    TRequest extends Request = Request,
+    TResponse extends Response = Response,
+    TCtx extends ExecutionContext = ExecutionContext,
+  >(options: CacheOptions<TRequest, TResponse, TCtx>): Promise<Response>;
 
   /**
    * Programmatically revalidate (purge) a specific path.
@@ -465,12 +507,12 @@ export interface ISRInstance {
    * const scoped = isr.scope(request);
    * event.locals.isr = scoped;
    *
-   * const cached = await scoped.lookup(request, ctx);
+ * const cached = await scoped.lookup({ request, ctx });
    * if (cached) return cached;
    *
    * const response = await resolve(event);
    * const config = scoped.resolveConfig();
-   * if (config) return scoped.cache(request, response, config, ctx);
+ * if (config) return scoped.cache({ request, response, routeConfig: config, ctx });
    * return response;
    * ```
    */

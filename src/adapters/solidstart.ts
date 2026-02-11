@@ -105,7 +105,7 @@ export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
       locals._isrCtx = ctx;
 
       // Phase 1: check cache — return Response to short-circuit
-      const cached = await scoped.lookup(request, ctx);
+      const cached = await scoped.lookup({ request, ctx });
       if (!cached) return;
 
       return cached;
@@ -130,7 +130,7 @@ export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
         headers: event.response.headers,
       });
 
-      const isrResponse = await scoped.cache(request, response, routeConfig, ctx);
+      const isrResponse = await scoped.cache({ request, response, routeConfig, ctx });
 
       event.response.status = isrResponse.status;
       for (const [key, value] of isrResponse.headers.entries()) {

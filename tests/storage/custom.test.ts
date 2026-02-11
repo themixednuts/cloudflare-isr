@@ -211,10 +211,10 @@ async function handleAndWait(
   headers?: Record<string, string>,
 ) {
   const ctx = createExecutionContext();
-  const res = await isr.handleRequest(
-    new Request(url, headers ? { headers } : undefined),
+  const res = await isr.handleRequest({
+    request: new Request(url, headers ? { headers } : undefined),
     ctx,
-  );
+  });
   await waitOnExecutionContext(ctx);
   return res!;
 }
@@ -409,8 +409,8 @@ describe("swap LockProvider", () => {
     const ctx1 = createExecutionContext();
     const ctx2 = createExecutionContext();
     await Promise.all([
-      isr.handleRequest(new Request("https://example.com/page"), ctx1),
-      isr.handleRequest(new Request("https://example.com/page"), ctx2),
+      isr.handleRequest({ request: new Request("https://example.com/page"), ctx: ctx1 }),
+      isr.handleRequest({ request: new Request("https://example.com/page"), ctx: ctx2 }),
     ]);
     await waitOnExecutionContext(ctx1);
     await waitOnExecutionContext(ctx2);
@@ -442,8 +442,8 @@ describe("swap LockProvider", () => {
     const ctx1 = createExecutionContext();
     const ctx2 = createExecutionContext();
     await Promise.all([
-      isr.handleRequest(new Request("https://example.com/page"), ctx1),
-      isr.handleRequest(new Request("https://example.com/page"), ctx2),
+      isr.handleRequest({ request: new Request("https://example.com/page"), ctx: ctx1 }),
+      isr.handleRequest({ request: new Request("https://example.com/page"), ctx: ctx2 }),
     ]);
     await waitOnExecutionContext(ctx1);
     await waitOnExecutionContext(ctx2);

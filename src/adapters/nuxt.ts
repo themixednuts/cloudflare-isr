@@ -87,7 +87,7 @@ export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
       event.context.isr = scoped;
 
       // Phase 1: check cache
-      const cached = await scoped.lookup(request, ctx);
+      const cached = await scoped.lookup({ request, ctx });
       if (cached) {
         event.respondWith(cached);
         return;
@@ -109,7 +109,7 @@ export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
           }
         }
         const response = new Response(body, { status, headers: responseHeaders });
-        const isrResponse = await scoped.cache(request, response, routeConfig, ctx);
+        const isrResponse = await scoped.cache({ request, response, routeConfig, ctx });
 
         event.respondWith(isrResponse);
         return;

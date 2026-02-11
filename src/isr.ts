@@ -1,10 +1,13 @@
 import type {
   CacheEntry,
   CacheStatus,
+  CacheOptions,
+  HandleRequestOptions,
   ISROptions,
   ISRInstance,
   ISRRequestScope,
   ISRStorage,
+  LookupOptions,
   Logger,
   RenderResult,
   RouteConfig,
@@ -39,6 +42,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     );
   });
 }
+
 
 function resolveStorage(options: ISROptions): ISRStorage {
   if ("kv" in options && options.kv) {
@@ -170,11 +174,8 @@ export function createISR(options: ISROptions): ISRInstance {
   }
 
   const instance: ISRInstance = {
-    async handleRequest(
-      request: Request,
-      ctx: ExecutionContext,
-      inlineRouteConfig?: RouteConfig,
-    ): Promise<Response | null> {
+    async handleRequest(requestOptions: HandleRequestOptions): Promise<Response | null> {
+      const { request, ctx, routeConfig: inlineRouteConfig } = requestOptions;
       // Only GET and HEAD are cacheable — return null for everything else
       // so the framework can handle the request normally.
       if (request.method !== "GET" && request.method !== "HEAD") {
@@ -329,10 +330,8 @@ export function createISR(options: ISROptions): ISRInstance {
 
       return buildResponse(entry, "MISS", logger, { exposeHeaders });
     },
-    async lookup(
-      request: Request,
-      ctx?: ExecutionContext,
-    ): Promise<Response | null> {
+    async lookup(lookupOptions: LookupOptions): Promise<Response | null> {
+      const { request, ctx } = lookupOptions;
       if (request.method !== "GET" && request.method !== "HEAD") {
         logDebug(logger, "lookup: skipping non-GET/HEAD method", request.method);
         return null;
@@ -403,12 +402,8 @@ export function createISR(options: ISROptions): ISRInstance {
       return null;
     },
 
-    async cache(
-      request: Request,
-      response: Response,
-      routeConfig: RouteConfig,
-      ctx: ExecutionContext,
-    ): Promise<Response> {
+    async cache(cacheOptions: CacheOptions): Promise<Response> {
+      const { request, response, routeConfig, ctx } = cacheOptions;
       const url = new URL(request.url);
       const key = cacheKey(url);
 
@@ -512,9 +507,9 @@ export function createISR(options: ISROptions): ISRInstance {
 
       return {
         // Proxy ISRInstance methods through closure
-        handleRequest: (...args) => instance.handleRequest(...args),
-        lookup: (...args) => instance.lookup(...args),
-        cache: (...args) => instance.cache(...args),
+        handleRequest: (options) => instance.handleRequest(options),
+        lookup: (options) => instance.lookup(options),
+        cache: (options) => instance.cache(options),
         revalidatePath: (...args) => instance.revalidatePath(...args),
         revalidateTag: (...args) => instance.revalidateTag(...args),
         scope: (req?) => instance.scope(req),

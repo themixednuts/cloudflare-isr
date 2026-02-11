@@ -9,16 +9,19 @@ export { ISRTagIndexDO } from "./revalidation/tag-index-do.ts";
 // Types
 export type { TagIndex } from "./revalidation/tag-index.ts";
 export type {
+  CacheOptions,
   CacheKeyFunction,
   CacheLayer,
   CacheEntry,
   CacheEntryMetadata,
   CacheStatus,
+  HandleRequestOptions,
   ISRAdapterOptions,
   ISRInstance,
   ISRRequestScope,
   ISROptions,
   ISRStorage,
+  LookupOptions,
   Logger,
   LockProvider,
   RenderFunction,

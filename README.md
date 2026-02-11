@@ -33,7 +33,7 @@ const isr = createISR({
 });
 
 // In your request handler / middleware:
-const response = await isr.handleRequest(request, ctx);
+const response = await isr.handleRequest({ request, ctx });
 if (response) return response;
 // ...fall through to framework
 ```
@@ -72,7 +72,7 @@ createISR({ storage: { cache, tagIndex, lock }, render, routes })
 ```
 
 Returns an `ISRInstance` with:
-- `handleRequest(request, ctx)` — returns `Response | null`
+- `handleRequest({ request, ctx, routeConfig? })` — returns `Response | null`
 - `revalidatePath(path)` — purge a single path
 - `revalidateTag(tag)` — purge all paths with a given tag
 
