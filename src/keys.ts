@@ -87,3 +87,26 @@ export function normalizeCacheKey(url: URL): string {
   }
   return path;
 }
+
+/**
+ * Default cache key strategy used by ISR internals.
+ *
+ * Includes a normalized pathname and a stable, sorted query string so
+ * query-varying pages do not collide in cache by default.
+ */
+export function defaultCacheKey(url: URL): string {
+  const path = normalizeCacheKey(url);
+  if (!url.searchParams || [...url.searchParams].length === 0) {
+    return path;
+  }
+
+  const params = [...url.searchParams.entries()]
+    .sort(([aKey, aValue], [bKey, bValue]) => {
+      if (aKey === bKey) return aValue.localeCompare(bValue);
+      return aKey.localeCompare(bKey);
+    })
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+
+  return `${path}?${params}`;
+}

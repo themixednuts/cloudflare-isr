@@ -254,13 +254,33 @@ export type ISROptions = ISROptionsWithBindings | ISROptionsWithStorage;
  */
 export interface ISRAdapterOptions {
   /** Route-specific ISR configuration keyed by path patterns. */
-  routes?: Record<string, RouteConfig>;
+  routes?: Readonly<Record<string, RouteConfig>>;
   /** Optional logger hook for warnings and errors. */
   logger?: Logger;
   /** Secret token that enables draft / bypass mode. */
   bypassToken?: string;
   /** Default TTL in seconds applied when no per-route override is set. */
   defaultRevalidate?: RevalidateValue;
+  /** Maximum milliseconds to wait for render. */
+  renderTimeout?: number;
+  /** Whether to lock on cache MISS. */
+  lockOnMiss?: boolean;
+  /** Whether to expose `X-ISR-*` headers. */
+  exposeHeaders?: boolean;
+  /** Predicate deciding if a status should be cached. */
+  shouldCacheStatus?: (status: number) => boolean;
+  /** Optional cache key function. */
+  cacheKey?: CacheKeyFunction;
+  /** Cache API namespace (default: `"isr"`). */
+  cacheName?: string;
+  /** Custom render function override for adapter integrations. */
+  render?: RenderFunction;
+  /** Canonical trusted origin used for adapter request reconstruction. */
+  trustedOrigin?: string;
+  /** Optional host allowlist for adapter request reconstruction. */
+  allowedHosts?: readonly string[];
+  /** URL scheme used when reconstructing request URLs without trustedOrigin. */
+  originProtocol?: "https" | "http";
   /** KV binding name (default: "ISR_CACHE"). */
   kvBinding?: string;
   /** Durable Object binding name (default: "TAG_INDEX"). */
@@ -348,7 +368,7 @@ export interface LookupOptions<
 }
 
 /** Options accepted by `cache()`. */
-export interface CacheOptions<
+export interface CacheResponseOptions<
   TRequest extends Request = Request,
   TResponse extends Response = Response,
   TCtx extends ExecutionContext = ExecutionContext,
@@ -361,6 +381,51 @@ export interface CacheOptions<
   routeConfig: RouteConfig;
   /** Execution context for async cache writes via `waitUntil`. */
   ctx: TCtx;
+}
+
+/** Options accepted by `cache()` when response parts are already available. */
+export interface CacheBodyOptions<
+  TRequest extends Request = Request,
+  TCtx extends ExecutionContext = ExecutionContext,
+> {
+  /** The original request (used to derive the cache key). */
+  request: TRequest;
+  /** Response status code from the framework render pipeline. */
+  status: number;
+  /** Rendered response body. */
+  body: string;
+  /** Optional response headers. */
+  headers?: Headers | Readonly<Record<string, string>>;
+  /** The route's ISR configuration. */
+  routeConfig: RouteConfig;
+  /** Execution context for async cache writes via `waitUntil`. */
+  ctx: TCtx;
+}
+
+export type CacheOptions<
+  TRequest extends Request = Request,
+  TResponse extends Response = Response,
+  TCtx extends ExecutionContext = ExecutionContext,
+> =
+  | CacheResponseOptions<TRequest, TResponse, TCtx>
+  | CacheBodyOptions<TRequest, TCtx>;
+
+/** Options accepted by `revalidatePath()`. */
+export interface RevalidatePathOptions {
+  /** The URL path or URL to revalidate (e.g. `"/blog/my-post"`). */
+  path: string | URL;
+}
+
+/** Options accepted by `revalidateTag()`. */
+export interface RevalidateTagOptions {
+  /** The cache tag to invalidate (e.g. `"blog"`). */
+  tag: string;
+}
+
+/** Options accepted by `scope()`. */
+export interface ScopeOptions<TRequest extends Request = Request> {
+  /** Optional request used to match the global routes map. */
+  request?: TRequest;
 }
 
 /**
@@ -478,16 +543,16 @@ export interface ISRInstance {
    * Programmatically revalidate (purge) a specific path.
    * The next request will re-render and cache the result.
    *
-   * @param path - The URL path or URL to revalidate (e.g. `"/blog/my-post"`).
+   * @param options - `{ path }`.
    */
-  revalidatePath(path: string | URL): Promise<void>;
+  revalidatePath(options: RevalidatePathOptions): Promise<void>;
 
   /**
    * Invalidate all cached entries associated with the given tag.
    *
-   * @param tag - The cache tag to invalidate (e.g. `"blog"`).
+   * @param options - `{ tag }`.
    */
-  revalidateTag(tag: string): Promise<void>;
+  revalidateTag(options: RevalidateTagOptions): Promise<void>;
 
   /**
    * Create a per-request scope with config builder methods.
@@ -496,7 +561,7 @@ export interface ISRInstance {
    * that load functions can safely call `defaults()` and `set()` on,
    * even when running concurrently.
    *
-   * @param request - Optional request for matching against the global `routes`
+   * @param options - `{ request }` used for matching against the global `routes`
    *                  map. When provided, `resolveConfig()` falls back to the
    *                  matching route config if no `defaults()`/`set()` calls
    *                  were made, and merges global route tags with per-request tags.
@@ -504,7 +569,7 @@ export interface ISRInstance {
    * @example
    * ```ts
    * // In hook/middleware:
-   * const scoped = isr.scope(request);
+   * const scoped = isr.scope({ request });
    * event.locals.isr = scoped;
    *
  * const cached = await scoped.lookup({ request, ctx });
@@ -516,5 +581,5 @@ export interface ISRInstance {
    * return response;
    * ```
    */
-  scope(request?: Request): ISRRequestScope;
+  scope<TRequest extends Request = Request>(options?: ScopeOptions<TRequest>): ISRRequestScope;
 }

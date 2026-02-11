@@ -3,7 +3,7 @@ import type { H3Event } from "h3";
 import { createISR } from "../isr.ts";
 import { renderer } from "../render.ts";
 import type { ISRAdapterOptions, ISRInstance, ISRRequestScope } from "../types.ts";
-import { host as hostValidator } from "../utils.ts";
+import { resolveRequestOrigin } from "../utils.ts";
 
 export type { ISRAdapterOptions } from "../types.ts";
 
@@ -15,10 +15,10 @@ interface CloudflareContext {
 
 let instance: ISRInstance | undefined;
 
-function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInstance {
+function getISR(env: Record<string, unknown>, options: ISRAdapterOptions): ISRInstance {
   if (!instance) {
-    const kvName = opts.kvBinding ?? "ISR_CACHE";
-    const tagName = opts.tagIndexBinding ?? "TAG_INDEX";
+    const kvName = options.kvBinding ?? "ISR_CACHE";
+    const tagName = options.tagIndexBinding ?? "TAG_INDEX";
 
     const kv = env[kvName];
     if (!kv) {
@@ -39,11 +39,17 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
     instance = createISR({
       kv: kv as KVNamespace,
       tagIndex: tagIndex as DurableObjectNamespace,
-      render: renderer(),
-      routes: opts.routes,
-      logger: opts.logger,
-      bypassToken: opts.bypassToken,
-      defaultRevalidate: opts.defaultRevalidate,
+      render: options.render ?? renderer(),
+      routes: options.routes,
+      logger: options.logger,
+      bypassToken: options.bypassToken,
+      defaultRevalidate: options.defaultRevalidate,
+      renderTimeout: options.renderTimeout,
+      lockOnMiss: options.lockOnMiss,
+      exposeHeaders: options.exposeHeaders,
+      shouldCacheStatus: options.shouldCacheStatus,
+      cacheKey: options.cacheKey,
+      cacheName: options.cacheName,
     });
   }
   return instance;
@@ -62,7 +68,7 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
  * export default handle({ routes: { "/": { revalidate: 60 } } });
  * ```
  */
-export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
+export function handle(options: ISRAdapterOptions = {}): NitroAppPlugin {
   return (nitro: NitroApp) => {
     const originalHandler = nitro.h3App.handler;
 
@@ -75,15 +81,27 @@ export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
 
       const { env, context: ctx } = cf;
 
-      const hostValue = hostValidator.sanitize(event.headers.get("host") ?? "localhost", opts.logger);
-      const url = new URL(event.path, `http://${hostValue}`);
+      let origin: string;
+      try {
+        origin = resolveRequestOrigin({
+          rawHost: event.headers.get("host") ?? "",
+          logger: options.logger,
+          protocol: options.originProtocol,
+          trustedOrigin: options.trustedOrigin,
+          allowedHosts: options.allowedHosts,
+        });
+      } catch {
+        return new Response("Invalid Host header", { status: 400 });
+      }
+
+      const url = new URL(event.path, origin);
       const request = new Request(url.toString(), {
         method: event.method,
         headers: event.headers,
       });
 
-      const isr = getISR(env, opts);
-      const scoped = isr.scope(request);
+      const isr = getISR(env, options);
+      const scoped = isr.scope({ request });
       event.context.isr = scoped;
 
       // Phase 1: check cache
@@ -108,8 +126,14 @@ export function handle(opts: ISRAdapterOptions = {}): NitroAppPlugin {
             responseHeaders[k] = Array.isArray(v) ? v.join(", ") : String(v);
           }
         }
-        const response = new Response(body, { status, headers: responseHeaders });
-        const isrResponse = await scoped.cache({ request, response, routeConfig, ctx });
+        const isrResponse = await scoped.cache({
+          request,
+          body,
+          status,
+          headers: responseHeaders,
+          routeConfig,
+          ctx,
+        });
 
         event.respondWith(isrResponse);
         return;

@@ -4,12 +4,15 @@ import type {
   ISRStorage,
   LockProvider,
   Logger,
+  RevalidatePathOptions,
+  RevalidateTagOptions,
   RenderFunction,
   RenderResult,
   RouteConfig,
 } from "../types.ts";
 import type { TagIndex } from "./tag-index.ts";
 import { logError, logWarn } from "../logger.ts";
+import { defaultCacheKey } from "../keys.ts";
 import {
   createCacheEntry,
   isNoStore,
@@ -94,15 +97,16 @@ export async function revalidate(options: {
       logger,
     });
 
-    await cache.put(key, entry);
-
-    await updateTagIndexSafely({
-      tagIndex,
-      tags: entry.metadata.tags,
-      key,
-      logger,
-      context: "Failed to update tag index during revalidation:",
-    });
+    await Promise.all([
+      cache.put(key, entry),
+      updateTagIndexSafely({
+        tagIndex,
+        tags: entry.metadata.tags,
+        key,
+        logger,
+        context: "Failed to update tag index during revalidation:",
+      }),
+    ]);
   } catch (error) {
     // Keep last-known-good cache entry — do not delete.
     logError(logger, `Background revalidation failed for "${key}":`, error);
@@ -110,8 +114,8 @@ export async function revalidate(options: {
 }
 
 interface Revalidator {
-  revalidatePath(path: string | URL): Promise<void>;
-  revalidateTag(tag: string): Promise<void>;
+  revalidatePath(options: RevalidatePathOptions): Promise<void>;
+  revalidateTag(options: RevalidateTagOptions): Promise<void>;
 }
 
 const MAX_PARALLEL_INVALIDATIONS = 25;
@@ -149,7 +153,7 @@ export function createRevalidator(options: {
   cacheKey?: CacheKeyFunction;
   logger?: Logger;
 }): Revalidator {
-  const cacheKey = options.cacheKey ?? ((url: URL) => url.pathname);
+  const cacheKey = options.cacheKey ?? defaultCacheKey;
   const logger = options.logger;
 
   function keyFromPath(input: string | URL): string {
@@ -161,10 +165,11 @@ export function createRevalidator(options: {
   }
 
   return {
-    async revalidatePath(path: string | URL): Promise<void> {
-      await options.storage.cache.delete(keyFromPath(path));
+    async revalidatePath(revalidatePathOptions: RevalidatePathOptions): Promise<void> {
+      await options.storage.cache.delete(keyFromPath(revalidatePathOptions.path));
     },
-    async revalidateTag(tag: string): Promise<void> {
+    async revalidateTag(revalidateTagOptions: RevalidateTagOptions): Promise<void> {
+      const { tag } = revalidateTagOptions;
       const keys = await options.storage.tagIndex.getKeysByTag(tag);
 
       // Delete cache entries and remove tag mappings in parallel.

@@ -11,8 +11,8 @@ Serve pages from cache, revalidate in the background, and purge by path or tag �
 
 - **Two-tier caching** — L1 Cache API (per-colo, fast) backed by L2 KV (global, consistent)
 - **Stale-while-revalidate** — serve stale content instantly while refreshing in the background
-- **Tag-based invalidation** — purge groups of pages with `revalidateTag("blog")`
-- **Path revalidation** — purge a single page with `revalidatePath("/blog/my-post")`
+- **Tag-based invalidation** — purge groups of pages with `revalidateTag({ tag: "blog" })`
+- **Path revalidation** — purge a single page with `revalidatePath({ path: "/blog/my-post" })`
 - **Route matching** — exact, param (`:slug` / `[slug]`), catch-all (`[...rest]`), wildcard (`*`)
 - **Framework-agnostic** — works with SvelteKit, Nuxt, SolidStart, or any Cloudflare Worker
 - **Bypass / draft mode** — skip cache with a secret token for content previews
@@ -73,8 +73,8 @@ createISR({ storage: { cache, tagIndex, lock }, render, routes })
 
 Returns an `ISRInstance` with:
 - `handleRequest({ request, ctx, routeConfig? })` — returns `Response | null`
-- `revalidatePath(path)` — purge a single path
-- `revalidateTag(tag)` — purge all paths with a given tag
+- `revalidatePath({ path })` — purge a single path
+- `revalidateTag({ tag })` — purge all paths with a given tag
 
 ### `renderer(init?)`
 

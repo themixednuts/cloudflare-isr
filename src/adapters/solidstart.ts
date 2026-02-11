@@ -2,7 +2,7 @@ import type { RequestMiddleware, ResponseMiddleware } from "@solidjs/start/middl
 import { createISR } from "../isr.ts";
 import { renderer } from "../render.ts";
 import type { ISRAdapterOptions, ISRInstance, ISRRequestScope } from "../types.ts";
-import { host as hostValidator } from "../utils.ts";
+import { resolveRequestOrigin } from "../utils.ts";
 
 export type { ISRAdapterOptions } from "../types.ts";
 
@@ -28,10 +28,10 @@ export interface MiddlewareHandlers {
 
 let instance: ISRInstance | undefined;
 
-function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInstance {
+function getISR(env: Record<string, unknown>, options: ISRAdapterOptions): ISRInstance {
   if (!instance) {
-    const kvName = opts.kvBinding ?? "ISR_CACHE";
-    const tagName = opts.tagIndexBinding ?? "TAG_INDEX";
+    const kvName = options.kvBinding ?? "ISR_CACHE";
+    const tagName = options.tagIndexBinding ?? "TAG_INDEX";
 
     const kv = env[kvName];
     if (!kv) {
@@ -52,11 +52,17 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
     instance = createISR({
       kv: kv as KVNamespace,
       tagIndex: tagIndex as DurableObjectNamespace,
-      render: renderer(),
-      routes: opts.routes,
-      logger: opts.logger,
-      bypassToken: opts.bypassToken,
-      defaultRevalidate: opts.defaultRevalidate,
+      render: options.render ?? renderer(),
+      routes: options.routes,
+      logger: options.logger,
+      bypassToken: options.bypassToken,
+      defaultRevalidate: options.defaultRevalidate,
+      renderTimeout: options.renderTimeout,
+      lockOnMiss: options.lockOnMiss,
+      exposeHeaders: options.exposeHeaders,
+      shouldCacheStatus: options.shouldCacheStatus,
+      cacheKey: options.cacheKey,
+      cacheName: options.cacheName,
     });
   }
   return instance;
@@ -79,7 +85,7 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
  * export default createMiddleware(handle({ routes: { "/": { revalidate: 60 } } }));
  * ```
  */
-export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
+export function handle(options: ISRAdapterOptions = {}): MiddlewareHandlers {
   return {
     onRequest: async (event) => {
       const nativeEvent = event.nativeEvent;
@@ -90,15 +96,27 @@ export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
       const { env, context: ctx } = cf;
 
       // nativeEvent is H3Event — use .path + host header to build full URL
-      const hostValue = hostValidator.sanitize(nativeEvent.headers.get("host") ?? "localhost", opts.logger);
-      const url = new URL(nativeEvent.path, `http://${hostValue}`);
+      let origin: string;
+      try {
+        origin = resolveRequestOrigin({
+          rawHost: nativeEvent.headers.get("host") ?? "",
+          logger: options.logger,
+          protocol: options.originProtocol,
+          trustedOrigin: options.trustedOrigin,
+          allowedHosts: options.allowedHosts,
+        });
+      } catch {
+        return new Response("Invalid Host header", { status: 400 });
+      }
+
+      const url = new URL(nativeEvent.path, origin);
       const request = new Request(url.toString(), {
         method: nativeEvent.method,
         headers: Object.fromEntries(nativeEvent.headers.entries()),
       });
 
-      const isr = getISR(env, opts);
-      const scoped = isr.scope(request);
+      const isr = getISR(env, options);
+      const scoped = isr.scope({ request });
       const locals = event.locals as ISRLocals;
       locals.isr = scoped;
       locals._isrRequest = request;
@@ -125,12 +143,14 @@ export function handle(opts: ISRAdapterOptions = {}): MiddlewareHandlers {
       if (body === undefined || body === null) return;
 
       const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
-      const response = new Response(bodyStr, {
+      const isrResponse = await scoped.cache({
+        request,
+        body: bodyStr,
         status: event.response.status ?? 200,
         headers: event.response.headers,
+        routeConfig,
+        ctx,
       });
-
-      const isrResponse = await scoped.cache({ request, response, routeConfig, ctx });
 
       event.response.status = isrResponse.status;
       for (const [key, value] of isrResponse.headers.entries()) {

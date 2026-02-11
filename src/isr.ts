@@ -1,4 +1,5 @@
 import type {
+  CacheBodyOptions,
   CacheEntry,
   CacheStatus,
   CacheOptions,
@@ -9,6 +10,7 @@ import type {
   ISRStorage,
   LookupOptions,
   Logger,
+  ScopeOptions,
   RenderResult,
   RouteConfig,
 } from "./types.ts";
@@ -23,12 +25,12 @@ import {
   isNoStore,
   resolveRevalidate,
   safeCacheGet,
-  sanitizeHeaders,
   toRenderResult,
   updateTagIndexSafely,
 } from "./utils.ts";
 import { createWorkersStorage } from "./storage/workers.ts";
 import { TagIndexDOClient } from "./revalidation/tag-index.ts";
+import { defaultCacheKey } from "./keys.ts";
 
 const DEFAULT_RENDER_TIMEOUT = 25_000;
 
@@ -42,7 +44,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     );
   });
 }
-
 
 function resolveStorage(options: ISROptions): ISRStorage {
   if ("kv" in options && options.kv) {
@@ -75,7 +76,15 @@ function buildResponse(
   const status = cached ? source.metadata.status : source.status;
   const rawHeaders = cached ? source.headers : (source.headers ?? {});
 
-  const headers = new Headers(sanitizeHeaders(rawHeaders, logger));
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(rawHeaders)) {
+    if (value === undefined) continue;
+    try {
+      headers.set(key, value);
+    } catch (error) {
+      logWarn(logger, `Dropping invalid header "${key}":`, error);
+    }
+  }
   const expose = opts?.exposeHeaders !== false;
 
   if (expose) {
@@ -121,7 +130,7 @@ export function createISR(options: ISROptions): ISRInstance {
   const storage = resolveStorage(options);
   const cache = storage.cache;
   const tagIndex = storage.tagIndex;
-  const cacheKey = options.cacheKey ?? ((url: URL) => url.pathname);
+  const cacheKey = options.cacheKey ?? defaultCacheKey;
   const defaultRevalidate = resolveRevalidate({
     defaultValue: options.defaultRevalidate,
   });
@@ -316,13 +325,15 @@ export function createISR(options: ISROptions): ISRInstance {
 
       ctx.waitUntil(
         (async () => {
-          await cache.put(key, entry);
-          await updateTagIndexSafely({
-            tagIndex,
-            tags: entry.metadata.tags,
-            key,
-            logger,
-          });
+          await Promise.all([
+            cache.put(key, entry),
+            updateTagIndexSafely({
+              tagIndex,
+              tags: entry.metadata.tags,
+              key,
+              logger,
+            }),
+          ]);
         })().catch((error) => {
           logError(logger, "Failed to persist cache entry:", error);
         }),
@@ -403,7 +414,7 @@ export function createISR(options: ISROptions): ISRInstance {
     },
 
     async cache(cacheOptions: CacheOptions): Promise<Response> {
-      const { request, response, routeConfig, ctx } = cacheOptions;
+      const { request, routeConfig, ctx } = cacheOptions;
       const url = new URL(request.url);
       const key = cacheKey(url);
 
@@ -421,40 +432,65 @@ export function createISR(options: ISROptions): ISRInstance {
           }),
         );
         // Return the original response with ISR headers
-        const headers = new Headers(response.headers);
+        const headers = new Headers(
+          "response" in cacheOptions
+            ? cacheOptions.response.headers
+            : cacheOptions.headers,
+        );
         if (exposeHeaders) {
           headers.set("X-ISR-Status", "SKIP");
         }
         headers.set("Cache-Control", "no-store");
-        return new Response(response.body, {
-          status: response.status,
+        return new Response("response" in cacheOptions ? cacheOptions.response.body : cacheOptions.body, {
+          status: "response" in cacheOptions ? cacheOptions.response.status : cacheOptions.status,
           headers,
         });
       }
 
       // Check if the response status is cacheable
-      if (!shouldCacheStatus(response.status)) {
-        logDebug(logger, "cache: skipping cache for status", response.status, "on", key);
-        const headers = new Headers(response.headers);
+      const responseStatus = "response" in cacheOptions ? cacheOptions.response.status : cacheOptions.status;
+      if (!shouldCacheStatus(responseStatus)) {
+        logDebug(logger, "cache: skipping cache for status", responseStatus, "on", key);
+        const headers = new Headers(
+          "response" in cacheOptions
+            ? cacheOptions.response.headers
+            : cacheOptions.headers,
+        );
         if (exposeHeaders) {
           headers.set("X-ISR-Status", "MISS");
         }
-        return new Response(response.body, {
-          status: response.status,
+        return new Response("response" in cacheOptions ? cacheOptions.response.body : cacheOptions.body, {
+          status: responseStatus,
           headers,
         });
       }
 
-      // Read the response body to create a cache entry
-      const body = await response.text();
-      const responseHeaders: Record<string, string> = {};
-      for (const [k, v] of response.headers.entries()) {
-        responseHeaders[k] = v;
+      let body: string;
+      let responseHeaders: Record<string, string>;
+      if ("response" in cacheOptions) {
+        body = await cacheOptions.response.text();
+        responseHeaders = {};
+        for (const [k, v] of cacheOptions.response.headers.entries()) {
+          responseHeaders[k] = v;
+        }
+      } else {
+        const bodyOptions = cacheOptions as CacheBodyOptions;
+        body = bodyOptions.body;
+        responseHeaders = {};
+        if (bodyOptions.headers instanceof Headers) {
+          for (const [k, v] of bodyOptions.headers.entries()) {
+            responseHeaders[k] = v;
+          }
+        } else if (bodyOptions.headers) {
+          for (const [k, v] of Object.entries(bodyOptions.headers)) {
+            responseHeaders[k] = v;
+          }
+        }
       }
 
       const result: RenderResult = {
         body,
-        status: response.status,
+        status: responseStatus,
         headers: responseHeaders,
         tags: routeConfig.tags as string[] | undefined,
       };
@@ -473,13 +509,15 @@ export function createISR(options: ISROptions): ISRInstance {
 
       ctx.waitUntil(
         (async () => {
-          await cache.put(key, entry);
-          await updateTagIndexSafely({
-            tagIndex,
-            tags: entry.metadata.tags,
-            key,
-            logger,
-          });
+          await Promise.all([
+            cache.put(key, entry),
+            updateTagIndexSafely({
+              tagIndex,
+              tags: entry.metadata.tags,
+              key,
+              logger,
+            }),
+          ]);
         })().catch((error) => {
           logError(logger, "cache: failed to persist entry:", error);
         }),
@@ -491,7 +529,8 @@ export function createISR(options: ISROptions): ISRInstance {
     revalidatePath: revalidator.revalidatePath,
     revalidateTag: revalidator.revalidateTag,
 
-    scope(request?: Request): ISRRequestScope {
+    scope(scopeOptions?: ScopeOptions): ISRRequestScope {
+      const { request } = scopeOptions ?? {};
       let _defaults: RouteConfig | null = null;
       let _set: RouteConfig | null = null;
 
@@ -510,9 +549,9 @@ export function createISR(options: ISROptions): ISRInstance {
         handleRequest: (options) => instance.handleRequest(options),
         lookup: (options) => instance.lookup(options),
         cache: (options) => instance.cache(options),
-        revalidatePath: (...args) => instance.revalidatePath(...args),
-        revalidateTag: (...args) => instance.revalidateTag(...args),
-        scope: (req?) => instance.scope(req),
+        revalidatePath: (options) => instance.revalidatePath(options),
+        revalidateTag: (options) => instance.revalidateTag(options),
+        scope: (options) => instance.scope(options),
 
         defaults(config: RouteConfig): void {
           _defaults = config;

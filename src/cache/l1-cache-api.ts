@@ -11,10 +11,11 @@ import { determineCacheStatus, cacheEntry } from "../utils.ts";
  */
 export function createL1CacheApi(cacheName: string): CacheLayer {
   const FOREVER_TTL_SECONDS = 60 * 60 * 24 * 365;
+  const cachePromise = caches.open(cacheName);
 
   return {
     async get(path: string): Promise<CacheLayerResult> {
-      const cache = await caches.open(cacheName);
+      const cache = await cachePromise;
       const url = cacheApiUrl(path);
       const response = await cache.match(url);
 
@@ -39,7 +40,7 @@ export function createL1CacheApi(cacheName: string): CacheLayer {
     },
 
     async put(path: string, entry: CacheEntry): Promise<void> {
-      const cache = await caches.open(cacheName);
+      const cache = await cachePromise;
       const url = cacheApiUrl(path);
 
       const remainingSeconds =
@@ -61,7 +62,7 @@ export function createL1CacheApi(cacheName: string): CacheLayer {
     },
 
     async delete(path: string): Promise<void> {
-      const cache = await caches.open(cacheName);
+      const cache = await cachePromise;
       const url = cacheApiUrl(path);
       await cache.delete(url);
     },

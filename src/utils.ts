@@ -11,6 +11,7 @@ import type { TagIndex } from "./revalidation/tag-index.ts";
 import { logWarn } from "./logger.ts";
 
 export const DEFAULT_REVALIDATE = 60;
+const TEXT_ENCODER = new TextEncoder();
 
 /**
  * Convert a render result (which may be a raw Response) to a RenderResult.
@@ -79,15 +80,75 @@ export const responseHeaders = {
  */
 export const host = {
   PATTERN: /^[a-zA-Z0-9._\-]+(:\d{1,5})?$/,
-  sanitize(raw: string, logger?: Logger): string {
+  sanitizeOrNull(raw: string, logger?: Logger): string | null {
     const trimmed = raw.trim();
     if (!host.PATTERN.test(trimmed)) {
       logWarn(logger, `Invalid Host header rejected: "${trimmed.slice(0, 64)}"`);
-      return "localhost";
+      return null;
     }
     return trimmed;
   },
+  sanitize(raw: string, logger?: Logger): string {
+    return host.sanitizeOrNull(raw, logger) ?? "localhost";
+  },
+  split(value: string): { hostname: string; port?: string } {
+    const colonIndex = value.lastIndexOf(":");
+    if (colonIndex === -1) {
+      return { hostname: value.toLowerCase() };
+    }
+    const hostname = value.slice(0, colonIndex).toLowerCase();
+    const port = value.slice(colonIndex + 1);
+    return port ? { hostname, port } : { hostname };
+  },
 };
+
+export interface ResolveOriginOptions {
+  rawHost: string;
+  logger?: Logger;
+  protocol?: "https" | "http";
+  trustedOrigin?: string;
+  allowedHosts?: readonly string[];
+}
+
+export function resolveRequestOrigin(options: ResolveOriginOptions): string {
+  const protocol = options.protocol ?? "https";
+
+  if (options.trustedOrigin) {
+    let parsed: URL;
+    try {
+      parsed = new URL(options.trustedOrigin);
+    } catch {
+      throw new Error("[ISR] Invalid trustedOrigin; expected absolute URL.");
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("[ISR] trustedOrigin must use http or https protocol.");
+    }
+    return parsed.origin;
+  }
+
+  const sanitizedHost = host.sanitizeOrNull(options.rawHost, options.logger);
+  if (!sanitizedHost) {
+    throw new Error("[ISR] Invalid Host header.");
+  }
+
+  if (options.allowedHosts && options.allowedHosts.length > 0) {
+    const incoming = host.split(sanitizedHost);
+    const match = options.allowedHosts.some((allowedRaw) => {
+      const allowed = host.sanitizeOrNull(allowedRaw);
+      if (!allowed) return false;
+      const expected = host.split(allowed);
+      if (expected.port) {
+        return incoming.hostname === expected.hostname && incoming.port === expected.port;
+      }
+      return incoming.hostname === expected.hostname;
+    });
+    if (!match) {
+      throw new Error("[ISR] Host header is not in allowedHosts.");
+    }
+  }
+
+  return `${protocol}://${sanitizedHost}`;
+}
 
 /** Maximum number of tags allowed per cache entry. */
 export const MAX_TAG_COUNT = 64;
@@ -238,31 +299,37 @@ export function fitMetadataTags(
   logger?: Logger,
 ): readonly string[] {
   const serialized = JSON.stringify(metadata);
-  const byteLength = new TextEncoder().encode(serialized).byteLength;
+  const byteLength = TEXT_ENCODER.encode(serialized).byteLength;
   if (byteLength <= KV_METADATA_MAX_BYTES) {
     return metadata.tags;
   }
 
   const baseMeta: CacheEntryMetadata = { ...metadata, tags: [] };
-  const baseBytes = new TextEncoder().encode(JSON.stringify(baseMeta)).byteLength;
+  const baseBytes = TEXT_ENCODER.encode(JSON.stringify(baseMeta)).byteLength;
+  if (baseBytes > KV_METADATA_MAX_BYTES) {
+    logWarn(
+      logger,
+      `KV metadata base exceeds ${KV_METADATA_MAX_BYTES} bytes (${baseBytes}B), dropping all tags`,
+    );
+    return [];
+  }
 
   const fittedTags: string[] = [];
+  let currentBytes = baseBytes;
   for (const tag of metadata.tags) {
-    const candidate = [...fittedTags, tag];
-    const candidateMeta = { ...metadata, tags: candidate };
-    const candidateBytes = new TextEncoder().encode(
-      JSON.stringify(candidateMeta),
-    ).byteLength;
+    const candidateMeta = { ...metadata, tags: [...fittedTags, tag] };
+    const candidateBytes = TEXT_ENCODER.encode(JSON.stringify(candidateMeta)).byteLength;
     if (candidateBytes > KV_METADATA_MAX_BYTES) {
       break;
     }
     fittedTags.push(tag);
+    currentBytes = candidateBytes;
   }
 
   logWarn(
     logger,
-    `KV metadata exceeds ${KV_METADATA_MAX_BYTES} bytes (${byteLength}B), ` +
-      `truncated tags from ${metadata.tags.length} to ${fittedTags.length}`,
+      `KV metadata exceeds ${KV_METADATA_MAX_BYTES} bytes (${byteLength}B), ` +
+      `truncated tags from ${metadata.tags.length} to ${fittedTags.length} (${currentBytes}B)`,
   );
 
   return fittedTags;

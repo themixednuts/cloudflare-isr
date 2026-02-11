@@ -13,10 +13,10 @@ interface CloudflarePlatform {
 
 let instance: ISRInstance | undefined;
 
-function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInstance {
+function getISR(env: Record<string, unknown>, options: ISRAdapterOptions): ISRInstance {
   if (!instance) {
-    const kvName = opts.kvBinding ?? "ISR_CACHE";
-    const tagName = opts.tagIndexBinding ?? "TAG_INDEX";
+    const kvName = options.kvBinding ?? "ISR_CACHE";
+    const tagName = options.tagIndexBinding ?? "TAG_INDEX";
 
     const kv = env[kvName];
     if (!kv) {
@@ -37,11 +37,17 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
     instance = createISR({
       kv: kv as KVNamespace,
       tagIndex: tagIndex as DurableObjectNamespace,
-      render: renderer(),
-      routes: opts.routes,
-      logger: opts.logger,
-      bypassToken: opts.bypassToken,
-      defaultRevalidate: opts.defaultRevalidate,
+      render: options.render ?? renderer(),
+      routes: options.routes,
+      logger: options.logger,
+      bypassToken: options.bypassToken,
+      defaultRevalidate: options.defaultRevalidate,
+      renderTimeout: options.renderTimeout,
+      lockOnMiss: options.lockOnMiss,
+      exposeHeaders: options.exposeHeaders,
+      shouldCacheStatus: options.shouldCacheStatus,
+      cacheKey: options.cacheKey,
+      cacheName: options.cacheName,
     });
   }
   return instance;
@@ -60,7 +66,7 @@ function getISR(env: Record<string, unknown>, opts: ISRAdapterOptions): ISRInsta
  * export const handle = isr();
  * ```
  */
-export function handle(opts: ISRAdapterOptions = {}): Handle {
+export function handle(options: ISRAdapterOptions = {}): Handle {
   return async ({ event, resolve }) => {
     const platform = event.platform as CloudflarePlatform | undefined;
 
@@ -69,8 +75,8 @@ export function handle(opts: ISRAdapterOptions = {}): Handle {
     }
 
     const { env, context: ctx } = platform;
-    const isr = getISR(env, opts);
-    const scoped = isr.scope(event.request);
+    const isr = getISR(env, options);
+    const scoped = isr.scope({ request: event.request });
     (event.locals as Record<string, unknown>).isr = scoped;
 
     // Phase 1: check cache
