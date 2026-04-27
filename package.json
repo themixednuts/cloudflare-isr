@@ -32,7 +32,6 @@
   "workspaces": ["examples/*"],
   "scripts": {
     "build": "vite build",
-    "prepare": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "bun run examples/isr-tests.ts",
