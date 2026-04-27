@@ -16,7 +16,6 @@ const pkg = JSON.parse(
 const externals = [
   ...Object.keys(pkg.dependencies ?? {}),
   ...Object.keys(pkg.peerDependencies ?? {}),
-  "cloudflare:workers",
 ];
 
 export default defineConfig({

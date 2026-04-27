@@ -168,7 +168,7 @@ interface ISROptionsBase {
    * throw when it encounters a cache miss.
    */
   render?: RenderFunction;
-  /** Optional cache key function. Defaults to `url.pathname`. */
+  /** Optional cache key function. Defaults to normalized path plus sorted query params. */
   cacheKey?: CacheKeyFunction;
   /**
    * Route-specific ISR configuration keyed by path patterns.

@@ -85,15 +85,23 @@ describe("lockKey", () => {
 
 describe("cacheApiUrl", () => {
   it("returns a full URL with isr.internal host", () => {
-    expect(cacheApiUrl("/blog/hello")).toBe("https://isr.internal/blog/hello");
+    expect(cacheApiUrl("/blog/hello")).toBe("https://isr.internal/__isr/%2Fblog%2Fhello");
   });
 
-  it("handles root path", () => {
-    expect(cacheApiUrl("/")).toBe("https://isr.internal/");
+  it("handles root key", () => {
+    expect(cacheApiUrl("/")).toBe("https://isr.internal/__isr/%2F");
   });
 
-  it("normalizes missing leading slash", () => {
-    expect(cacheApiUrl("blog/hello")).toBe("https://isr.internal/blog/hello");
+  it("treats cache keys as opaque", () => {
+    expect(cacheApiUrl("blog/hello")).toBe("https://isr.internal/__isr/blog%2Fhello");
+    expect(cacheApiUrl("blog/hello")).not.toBe(cacheApiUrl("/blog/hello"));
+  });
+
+  it("keeps query-bearing keys in the path, not the URL query", () => {
+    const url = new URL(cacheApiUrl("/page?a=1&b=2"));
+    expect(url.search).toBe("");
+    expect(url.pathname).toBe("/__isr/%2Fpage%3Fa%3D1%26b%3D2");
+    expect(cacheApiUrl("/page?a=1")).not.toBe(cacheApiUrl("/page"));
   });
 });
 

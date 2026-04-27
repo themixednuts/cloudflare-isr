@@ -1,5 +1,3 @@
-import { DurableObject } from "cloudflare:workers";
-
 /** Maximum allowed length for tag or key inputs in the DO. */
 const MAX_INPUT_LENGTH = 2048;
 
@@ -67,11 +65,10 @@ async function parseJsonBody<T>(request: Request): Promise<T> {
  * (see `wrangler.jsonc`), but the DO also ensures it exists at
  * construction time for safety.
  */
-export class ISRTagIndexDO extends DurableObject {
+export class ISRTagIndexDO implements DurableObject {
   private sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(ctx: DurableObjectState, _env: Env) {
     this.sql = ctx.storage.sql;
     this.sql.exec(
       `CREATE TABLE IF NOT EXISTS tag_keys (
@@ -82,7 +79,7 @@ export class ISRTagIndexDO extends DurableObject {
     );
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     try {

@@ -50,11 +50,11 @@ export function lockKey(key: string): LockKey {
 
 /**
  * Returns a fake URL suitable for the Cache API.
- * The Cache API requires a URL-like key.
+ * The Cache API requires a URL-like key. Encode the full cache key into the
+ * path so keys containing `?` do not collapse to the same URL pathname.
  */
-export function cacheApiUrl(path: string): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  return `https://isr.internal${normalized}`;
+export function cacheApiUrl(key: string): string {
+  return `https://isr.internal/__isr/${encodeURIComponent(key)}`;
 }
 
 /**
